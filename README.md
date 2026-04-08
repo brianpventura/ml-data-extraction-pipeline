@@ -94,7 +94,7 @@ python main.py
 ```
 
 ## 👨‍💻 Autor
-# Brian Pereira Ventura
+### Brian Pereira Ventura
 Analista de Dados / Desenvolvedor
 
 🔗 [LinkedIn](https://br.linkedin.com/in/brian-ventura-68081a25a)

@@ -1,10 +1,10 @@
 """
 load.database
 ~~~~~~~~~~~~~
-Camada de carga (Load) do pipeline ETL.
-Conecta ao MySQL, cria tabelas e executa operações de INSERT / UPDATE.
-Recebe dados já limpos e transformados — nenhuma lógica de negócio
-ou de API deve existir neste módulo.
+Load layer of the ETL pipeline.
+Manages database connections, DDL schema creation, and DML
+upsert operations via staging tables. Receives pre-processed
+DataFrames only — no API or business logic belongs here.
 """
 
 import logging
@@ -19,19 +19,19 @@ from src.config.settings import DB_HOST, DB_NAME, DB_PASS, DB_PORT, DB_USER
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Conexão (singleton — reutiliza o mesmo pool de conexões)
+# Connection (singleton — reuses the same connection pool)
 # ---------------------------------------------------------------------------
 _engine: Optional[Engine] = None
 
 
 def conectar_mysql() -> Engine:
-    """Retorna uma Engine do SQLAlchemy para o MySQL.
+    """Returns a SQLAlchemy Engine for MySQL.
 
-    Usa o padrão singleton: a Engine (e seu pool de conexões) é criada
-    apenas uma vez e reutilizada em todas as chamadas subsequentes.
+    Uses the singleton pattern: the Engine (and its connection pool)
+    is created only once and reused across all subsequent calls.
 
     Returns:
-        Engine configurada com as credenciais do .env.
+        Engine configured with credentials from .env.
     """
     global _engine
     if _engine is None:
@@ -42,21 +42,22 @@ def conectar_mysql() -> Engine:
 
 
 # ---------------------------------------------------------------------------
-# DDL — Criação de tabelas
+# DDL — Table creation
 # ---------------------------------------------------------------------------
 
 def criar_tabelas(engine: Engine) -> None:
-    """Cria as tabelas do Star Schema caso ainda não existam.
+    """Creates the Star Schema tables if they do not already exist.
 
-    Tabelas criadas:
-        - ``tb_cliente`` (Dimensão)
-        - ``tb_produto`` (Dimensão)
-        - ``tb_pedido`` (Fato — cabeçalho)
-        - ``tb_itens_pedido`` (Fato — linha)
-        - ``tb_custos_ads`` (Fato — custos diários de publicidade)
+    Tables created:
+        - ``tb_cliente`` (Dimension)
+        - ``tb_produto`` (Dimension)
+        - ``tb_pedido`` (Fact — header)
+        - ``tb_itens_pedido`` (Fact — line item)
+        - ``tb_custos_ads`` (Fact — daily advertising costs)
+        - ``tb_custos_operacionais`` (Fact — operational costs)
 
     Args:
-        engine: Engine do SQLAlchemy conectada ao MySQL.
+        engine: SQLAlchemy Engine connected to MySQL.
     """
     with engine.begin() as conn:
         conn.execute(
@@ -111,7 +112,7 @@ def criar_tabelas(engine: Engine) -> None:
             """)
         )
 
-        # Tabela Fato de Custos de Ads configurada com Chave Composta visando garantir idempotência durante Upserts.
+        # Ads cost fact table with composite PK for upsert idempotency
         conn.execute(
             text("""
                 CREATE TABLE IF NOT EXISTS tb_custos_ads (
@@ -137,7 +138,7 @@ def criar_tabelas(engine: Engine) -> None:
             """)
         )
 
-    logger.info("Tabelas do Star Schema verificadas/criadas com sucesso.")
+    logger.info("Star Schema tables verified/created successfully.")
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +151,18 @@ def salvar_no_banco(
     df_pedidos: pd.DataFrame,
     df_itens: pd.DataFrame,
 ) -> None:
-    """Insere os dados transformados no MySQL usando tabelas de staging
-    e lógica de upsert (ON DUPLICATE KEY UPDATE).
+    """Inserts transformed data into MySQL using staging tables
+    and upsert logic (ON DUPLICATE KEY UPDATE).
 
-    As staging tables são criadas dentro da mesma transação (via ``conn``)
-    para garantir atomicidade — se o upsert falhar, o rollback desfaz
-    tudo, incluindo as staging tables.
+    Staging tables are created within the same transaction to
+    ensure atomicity — if the upsert fails, rollback undoes
+    everything, including the staging tables.
 
     Args:
-        df_clientes: Dimensão clientes.
-        df_produtos: Dimensão produtos (com custo_unitario preenchido).
-        df_pedidos: Fato cabeçalho de pedidos.
-        df_itens: Fato linha de itens do pedido.
+        df_clientes: Customer dimension.
+        df_produtos: Product dimension (with custo_unitario populated).
+        df_pedidos: Order fact header.
+        df_itens: Order item fact lines.
     """
     engine = conectar_mysql()
     criar_tabelas(engine)
@@ -254,27 +255,27 @@ def salvar_no_banco(
                 )
 
     except Exception as exc:
-        logger.error("Erro crítico no banco de dados: %s", exc, exc_info=True)
+        logger.error("Critical database error: %s", exc, exc_info=True)
         raise
 
 
 # ---------------------------------------------------------------------------
-# Atualização de custos no banco
+# Cost update in database
 # ---------------------------------------------------------------------------
 
 def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
-    """Atualiza a coluna ``custo_unitario`` na tabela ``tb_produto``
-    usando a planilha de custos já processada.
+    """Updates the ``custo_unitario`` column in ``tb_produto``
+    using the pre-processed cost DataFrame.
 
-    Recebe um DataFrame pré-processado (saída de
-    ``extract.local_data.carregar_planilha_custos``) e executa UPDATEs
-    em lote via staging table.
+    Receives a DataFrame (output of
+    ``extract.local_data.carregar_planilha_custos``) and executes
+    batch UPDATEs via a staging table.
 
     Args:
-        df_custos: DataFrame com colunas ``sku`` (str) e ``custo`` (float).
+        df_custos: DataFrame with ``sku`` (str) and ``custo`` (float) columns.
 
     Returns:
-        Quantidade de produtos atualizados no banco.
+        Number of products updated in the database.
     """
     if df_custos.empty:
         logger.warning("DataFrame de custos vazio. Nenhum UPDATE executado.")
@@ -285,7 +286,7 @@ def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
 
     try:
         with engine.begin() as conn:
-            # Staging com custos — dentro da mesma transação
+            # Staging with costs — within the same transaction
             df_custos[["sku", "custo"]].to_sql(
                 "stg_custos", con=conn, if_exists="replace", index=False
             )
@@ -315,16 +316,16 @@ def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Consulta — carga incremental
+# Query — incremental load
 # ---------------------------------------------------------------------------
 
 def obter_ultima_data_pedido() -> Optional[str]:
-    """Busca a data do pedido mais recente salvo no banco para
-    viabilizar a carga incremental.
+    """Fetches the most recent order date from the database to
+    enable incremental loading.
 
     Returns:
-        Data formatada no padrão ISO 8601 exigido pela API do ML,
-        ou None se o banco estiver vazio ou a tabela não existir.
+        Date formatted in the ISO 8601 pattern required by the API,
+        or None if the database is empty or the table does not exist.
     """
     engine = conectar_mysql()
     try:
@@ -341,13 +342,13 @@ def obter_ultima_data_pedido() -> Optional[str]:
 
 
 def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
-    """Insere/atualiza custos operacionais via staging table.
+    """Inserts/updates operational costs via staging table.
 
     Args:
-        df_op: DataFrame com colunas: data_metrica, tipo_custo, valor.
+        df_op: DataFrame with columns: data_metrica, tipo_custo, valor.
 
     Returns:
-        Quantidade de registros processados.
+        Number of records processed.
     """
     if df_op.empty:
         return 0

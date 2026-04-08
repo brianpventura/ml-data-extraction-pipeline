@@ -1,33 +1,24 @@
 """
-atualizar_ads — Módulo de Extração de Custos do Mercado Ads
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Extrai métricas diárias de custo das campanhas de Product Ads (PADS)
-e salva na tabela tb_custos_ads no MySQL.
+run_ads_update — Advertising Metrics Extraction Job
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Extracts daily cost metrics from Product Ads (PADS) campaigns
+and persists them into the ads cost fact table.
 
-Fluxo correto da API de Ads do Mercado Livre (documentação oficial):
-  1. GET /advertising/advertisers?product_id=PADS  → obtém advertiser_id
-  2. GET /advertising/advertisers/{id}/campaigns    → lista campanhas
-  3. GET /advertising/advertisers/{id}/metrics      → métricas globais (diárias)
-     OU
-     GET /advertising/advertisers/{id}/product_ads/campaigns/{cid}/metrics
-                                                    → métricas por campanha
+API workflow:
+  1. GET /advertising/advertisers?product_id=PADS  → resolve advertiser_id
+  2. GET /advertising/advertisers/{id}/campaigns    → list active campaigns
+  3. GET .../campaigns/{id}/metrics                 → daily metrics per campaign
 
-Headers obrigatórios:
+Required headers:
   - Authorization: Bearer {access_token}
   - Content-Type: application/json
-  - Api-Version: 1    ← ESSENCIAL — sem ele, a API retorna "Type mismatch"
+  - Api-Version: 1
 
-Tratamento de Exceções e Status HTTP esperados:
-  - 400 Bad Request: Ocorre na ausência do cabeçalho obrigatório 'Api-Version: 1'.
-  - 404 Not Found: Indica endpoint deprecado ou ausência do serviço de 'Advertiser' associado à conta solicitada.
-  - 405 Method Not Allowed: Rotas com suporte estrito e exclusivo ao método GET.
+Expected HTTP error codes:
+  - 400: Missing required 'Api-Version: 1' header.
+  - 404: Deprecated endpoint or inactive advertising module.
+  - 405: Routes with strict GET-only support.
 """
-
-import sys
-from pathlib import Path
-
-# Garante que a raiz do projeto esteja no sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import datetime
 import logging
@@ -37,23 +28,29 @@ import pandas as pd
 import requests
 from sqlalchemy import text
 
-from src.extract.mercadolivre_client import MercadoLivreClient
+from src.extract.marketplace_client import MercadoLivreClient
 from src.load.database import conectar_mysql
+from src.config.settings import (
+    ADS_BASE_URL,
+    REQUEST_TIMEOUT,
+    ADS_CHUNK_DAYS,
+    ADS_BATCH_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constantes
+# Constants
 # ---------------------------------------------------------------------------
-_ADS_BASE_URL = "https://api.mercadolibre.com/advertising"
-_REQUEST_TIMEOUT = 15
+_ADS_BASE_URL = ADS_BASE_URL
+_REQUEST_TIMEOUT = REQUEST_TIMEOUT
 
 
 def _ads_headers(access_token: str) -> dict[str, str]:
-    """Retorna os headers obrigatórios para a API de Ads.
+    """Returns the mandatory headers for the Ads API.
 
-    O header 'Api-Version: 1' é OBRIGATÓRIO — sem ele, a API retorna
-    erro 400 "Type mismatch" mesmo em requisições válidas.
+    The 'Api-Version: 1' header is required — without it, the API
+    returns a 400 "Type mismatch" error on otherwise valid requests.
     """
     return {
         "Authorization": f"Bearer {access_token}",
@@ -63,18 +60,17 @@ def _ads_headers(access_token: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Passo 1: Obter advertiser_id
+# Step 1: Obtain advertiser_id
 # ---------------------------------------------------------------------------
 
 def _obter_advertiser_id(access_token: str) -> Optional[int]:
-    """Consulta o advertiser_id do vendedor para Product Ads (PADS).
+    """Queries the advertiser_id for the seller's Product Ads (PADS).
 
-    O advertiser_id é obrigatório para todas as chamadas subsequentes.
-    Se retornar None, significa que o módulo de Ads não está ativado
-    na conta do vendedor.
+    The advertiser_id is required for all subsequent API calls.
+    Returns None if the Ads module is not activated.
 
     Returns:
-        advertiser_id (int) ou None se não encontrado.
+        advertiser_id (int) or None if not found.
     """
     url = f"{_ADS_BASE_URL}/advertisers"
     params = {"product_id": "PADS"}
@@ -86,7 +82,7 @@ def _obter_advertiser_id(access_token: str) -> Optional[int]:
         if resp.status_code == 200:
             dados = resp.json()
 
-            # Formato real da API: {"advertisers": [{"advertiser_id": 147816, ...}]}
+            # Expected format: {"advertisers": [{"advertiser_id": <int>, ...}]}
             if isinstance(dados, dict) and "advertisers" in dados:
                 lista = dados["advertisers"]
                 if isinstance(lista, list) and len(lista) > 0:
@@ -95,14 +91,14 @@ def _obter_advertiser_id(access_token: str) -> Optional[int]:
                         logger.info("Advertiser ID encontrado: %s", adv_id)
                         return adv_id
 
-            # Fallback: resposta como lista direta
+            # Fallback: direct list response
             if isinstance(dados, list) and len(dados) > 0:
                 adv_id = dados[0].get("advertiser_id")
                 if adv_id:
                     logger.info("Advertiser ID encontrado: %s", adv_id)
                     return adv_id
 
-            # Fallback: resposta como objeto direto
+            # Fallback: direct object response
             if isinstance(dados, dict) and "advertiser_id" in dados:
                 adv_id = dados["advertiser_id"]
                 logger.info("Advertiser ID encontrado: %s", adv_id)
@@ -130,16 +126,16 @@ def _obter_advertiser_id(access_token: str) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# Passo 2: Listar campanhas
+# Step 2: List campaigns
 # ---------------------------------------------------------------------------
 
 def _listar_campanhas(
     access_token: str, advertiser_id: int
 ) -> list[dict[str, Any]]:
-    """Lista todas as campanhas de Product Ads do vendedor.
+    """Lists all Product Ads campaigns for the seller.
 
     Returns:
-        Lista de dicionários com dados das campanhas.
+        List of dictionaries with campaign data.
     """
     url = f"{_ADS_BASE_URL}/advertisers/{advertiser_id}/product_ads/campaigns"
     headers = _ads_headers(access_token)
@@ -167,7 +163,7 @@ def _listar_campanhas(
 
 
 # ---------------------------------------------------------------------------
-# Passo 3: Buscar métricas
+# Step 3: Fetch metrics
 # ---------------------------------------------------------------------------
 
 def _buscar_metricas_advertiser(
@@ -176,12 +172,12 @@ def _buscar_metricas_advertiser(
     data_inicio: str,
     data_fim: str,
 ) -> list[dict[str, Any]]:
-    """Busca métricas globais diárias do advertiser (todas as campanhas).
+    """Fetches global daily metrics for the advertiser (all campaigns).
 
-    Usa aggregation_type=daily para obter dados por dia.
+    Uses aggregation_type=daily for per-day granularity.
 
     Returns:
-        Lista de dicionários com métricas diárias.
+        List of dictionaries with daily metrics.
     """
     url = f"{_ADS_BASE_URL}/metrics"
     headers = _ads_headers(access_token)
@@ -197,7 +193,7 @@ def _buscar_metricas_advertiser(
 
         if resp.status_code == 200:
             dados = resp.json()
-            # A resposta pode ser {results: [...]} ou diretamente uma lista
+            # Response may be {results: [...]} or a direct list
             if isinstance(dados, dict):
                 return dados.get("results", [dados])
             elif isinstance(dados, list):
@@ -222,14 +218,13 @@ def _buscar_metricas_campanha(
     advertiser_id: int,
     user_id: int,
 ) -> list[dict[str, Any]]:
-    """Radar que testa as 4 variações de URL de métricas do Mercado Livre.
+    """Probes multiple metric endpoint variants for a specific campaign.
 
-    A arquitetura de métricas do ML varia de conta para conta.
-    Tentamos as 4 rotas conhecidas e retornamos a primeira que
-    responder com HTTP 200.
+    The API architecture varies between accounts. Tests 4 known
+    route patterns and returns the first one responding with HTTP 200.
 
     Returns:
-        Lista de dicionários com métricas, ou lista vazia.
+        List of metric dictionaries, or empty list.
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -238,13 +233,13 @@ def _buscar_metricas_campanha(
     }
 
     urls_para_testar = [
-        # 1. Nova arquitetura (com product_ads e advertiser_id)
+        # 1. New architecture (with product_ads and advertiser_id)
         f"https://api.mercadolibre.com/advertising/product_ads/campaigns/{campaign_id}/metrics?advertiser_id={advertiser_id}&date_from={data_inicio}&date_to={data_fim}&aggregation_type=daily&group_by=date",
-        # 2. Nova arquitetura (com product_ads e user_id)
+        # 2. New architecture (with product_ads and user_id)
         f"https://api.mercadolibre.com/advertising/product_ads/campaigns/{campaign_id}/metrics?user_id={user_id}&date_from={data_inicio}&date_to={data_fim}&aggregation_type=daily&group_by=date",
-        # 3. Arquitetura unificada (sem product_ads, com advertiser_id)
+        # 3. Unified architecture (without product_ads, with advertiser_id)
         f"https://api.mercadolibre.com/advertising/campaigns/{campaign_id}/metrics?advertiser_id={advertiser_id}&date_from={data_inicio}&date_to={data_fim}&aggregation_type=daily&group_by=date",
-        # 4. Arquitetura unificada (sem product_ads, com user_id)
+        # 4. Unified architecture (without product_ads, with user_id)
         f"https://api.mercadolibre.com/advertising/campaigns/{campaign_id}/metrics?user_id={user_id}&date_from={data_inicio}&date_to={data_fim}&aggregation_type=daily&group_by=date",
     ]
 
@@ -253,7 +248,7 @@ def _buscar_metricas_campanha(
             resp = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
             if resp.status_code == 200:
                 dados = resp.json()
-                # Normaliza para lista
+                # Normalize to list
                 if isinstance(dados, dict):
                     return dados.get("results", [dados])
                 elif isinstance(dados, list):
@@ -266,7 +261,7 @@ def _buscar_metricas_campanha(
 
 
 # ---------------------------------------------------------------------------
-# Orquestrador do módulo
+# Job orchestrator
 # ---------------------------------------------------------------------------
 
 def atualizar_modulo_ads(
@@ -274,26 +269,26 @@ def atualizar_modulo_ads(
     data_inicio_str: Optional[str] = None,
     data_fim_str: Optional[str] = None,
 ) -> None:
-    """Extrai custos diários do Mercado Ads e salva na tabela tb_custos_ads.
+    """Extracts daily Ads costs and saves to the tb_custos_ads table.
 
-    Fluxo:
-      1. Obtém token via MercadoLivreClient
-      2. Obtém advertiser_id via /advertising/advertisers?product_id=PADS
-      3. Tenta métricas globais (consolidadas por dia)
-      4. Se disponível, também busca métricas por campanha individual
-      5. Insere/atualiza no MySQL via staging table
+    Workflow:
+      1. Obtains token via MercadoLivreClient
+      2. Resolves advertiser_id via /advertising/advertisers?product_id=PADS
+      3. Attempts global metrics (consolidated per day)
+      4. If available, also fetches per-campaign metrics
+      5. Inserts/updates via staging table
 
     Args:
-        dias_retroativos: Quantidade de dias para trás a buscar.
-        data_inicio_str: Data início explícita (AAAA-MM-DD). Sobrescreve dias_retroativos.
-        data_fim_str: Data fim explícita (AAAA-MM-DD). Sobrescreve dias_retroativos.
+        dias_retroativos: Number of days to look back.
+        data_inicio_str: Explicit start date (YYYY-MM-DD). Overrides dias_retroativos.
+        data_fim_str: Explicit end date (YYYY-MM-DD). Overrides dias_retroativos.
     """
     print("\n=========================================")
     print("   Módulo Extração - Mercado Ads API   ")
     print("=========================================\n")
 
     try:
-        # --- 1. Autenticação inicial ---
+        # --- 1. Initial authentication ---
         print("1. Validando Token...")
         cliente_ml = MercadoLivreClient()
         access_token, user_id = cliente_ml.obter_token_acesso()
@@ -339,11 +334,11 @@ def atualizar_modulo_ads(
 
         print(f"   Advertiser ID: {advertiser_id}")
 
-      # --- 3. Buscar métricas com Date Chunking + Batch Save ---
-        _CHUNK_DIAS = 1  # FORÇANDO 1 DIA PARA A API NÃO SOMAR TUDO
-        _BATCH_SIZE = 30  # Salva no banco a cada 30 chunks
+      # --- 3. Fetch metrics with date chunking + batch save ---
+        _CHUNK_DIAS = ADS_CHUNK_DAYS
+        _BATCH_SIZE = ADS_BATCH_SIZE
 
-        # Gera os blocos de datas dia a dia
+        # Generate day-by-day date blocks
         chunks: list[tuple[str, str]] = []
         cursor = data_inicio
         while cursor <= hoje:  # <= INCLUI O DIA DE HOJE
@@ -363,14 +358,14 @@ def atualizar_modulo_ads(
         debug_impresso = False
         total_salvos = 0
 
-        # Inicializa engine e lista campanhas uma única vez
+        # Initialize engine and list campaigns once
         engine = conectar_mysql()
         campanhas = _listar_campanhas(access_token, advertiser_id)
         if campanhas:
             print(f"   {len(campanhas)} campanha(s) encontrada(s).")
 
         def _salvar_lote_no_banco(dados: list, eng) -> int:
-            """Salva um lote de métricas no MySQL via staging table."""
+            """Saves a batch of metrics to MySQL via staging table."""
             if not dados:
                 return 0
 
@@ -401,13 +396,13 @@ def atualizar_modulo_ads(
             return len(df)
 
         for idx, (chunk_inicio, chunk_fim) in enumerate(chunks, start=1):
-            # Renova token a cada bloco para evitar expiração em execuções longas
+            # Renew token per chunk to prevent expiration on long runs
             access_token, user_id = cliente_ml.obter_token_acesso()
 
             print(f"   [{idx}/{total_chunks}] Bloco: {chunk_inicio} → {chunk_fim}...", end=" ")
             registros_bloco = 0
 
-            # Estratégia A: Métricas por campanha individual
+            # Strategy A: Per-campaign metrics
             if campanhas:
                 for camp in campanhas:
                     camp_id = str(camp.get("id", ""))
@@ -418,7 +413,7 @@ def atualizar_modulo_ads(
                         advertiser_id, user_id
                     )
 
-                    # Extrai a lista de métricas dinamicamente
+                    # Extract metrics list dynamically
                     lista_metricas = []
                     if isinstance(metricas_brutas, list):
                         lista_metricas = metricas_brutas
@@ -427,7 +422,7 @@ def atualizar_modulo_ads(
                             "metrics", metricas_brutas.get("results", [])
                         )
 
-                    # Debug: imprime o formato bruto na primeira vez
+                    # Debug: print raw format on first occurrence
                     if lista_metricas and not debug_impresso:
                         print(f"\n   [DEBUG] Formato bruto da 1ª métrica: {lista_metricas[0]}")
                         debug_impresso = True
@@ -446,7 +441,7 @@ def atualizar_modulo_ads(
                         })
                         registros_bloco += 1
 
-            # Estratégia B: Se não achou por campanha neste bloco, tenta consolidado
+            # Strategy B: Consolidated metrics (fallback if no per-campaign data)
             if registros_bloco == 0:
                 metricas_globais = _buscar_metricas_advertiser(
                     access_token, advertiser_id, chunk_inicio, chunk_fim
@@ -479,21 +474,21 @@ def atualizar_modulo_ads(
             else:
                 print("vazio (provavelmente além da retenção)")
 
-            # --- Batch Save: salva a cada _BATCH_SIZE blocos ---
+            # --- Batch save: persist every _BATCH_SIZE chunks ---
             if idx % _BATCH_SIZE == 0 and dados_ads:
                 salvos = _salvar_lote_no_banco(dados_ads, engine)
                 total_salvos += salvos
                 dados_ads.clear()
                 print(f"   💾 Lote de {_BATCH_SIZE} dias salvo no banco ({salvos} registros, {total_salvos} total).")
 
-        # --- Flush residual: salva dados restantes após o loop ---
+        # --- Flush: persist remaining data after loop ---
         if dados_ads:
             salvos = _salvar_lote_no_banco(dados_ads, engine)
             total_salvos += salvos
             dados_ads.clear()
             print(f"   💾 Lote final salvo no banco ({salvos} registros).")
 
-        # --- 4. Resultado ---
+        # --- 4. Results ---
         if total_salvos > 0:
             print(f"\n✅ SUCESSO! {total_salvos} registros de Ads atualizados no banco de dados.\n")
         else:
@@ -502,7 +497,7 @@ def atualizar_modulo_ads(
             print("   -> O pipeline continuará normalmente.\n")
 
     except Exception as e:
-        # Tenta salvar dados parciais antes de reportar o erro
+        # Attempt partial data save before reporting the error
         if dados_ads:
             try:
                 eng = conectar_mysql()
@@ -518,7 +513,7 @@ def atualizar_modulo_ads(
 
 
 # ---------------------------------------------------------------------------
-# Entry point (execução standalone)
+# Entry point (standalone execution)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

@@ -1,18 +1,10 @@
-#arquivo json
-tokens.json
-*.json
+# --- Sensitive / runtime files (surgical) ---
+/tokens.json
 
-# Arquivos de material
-/material
-*.xlsx
-
-# Arquivos Power BI
-/dashboard
+# --- Local data (not tracked) ---
+/material/
+/dashboard/
 *.pbix
-
-# Cache do Python
-__pycache__/
-*.pyc
 
 ### Database ###
 *.accdb

@@ -244,8 +244,8 @@ def salvar_no_banco(
                         INSERT IGNORE INTO fato_itens_pedido
                             (id_pedido, id_produto, quantidade,
                              preco_unitario, taxa_venda)
-                        SELECT id_pedido, id_produto, quantity,
-                               unit_price, sale_fee
+                        SELECT id_pedido, id_produto, quantidade,
+                               preco_unitario, taxa_venda
                         FROM stg_itens;
                     """)
                 )

@@ -143,7 +143,7 @@ The CLI will prompt you to choose an extraction mode:
 
 ## 👨‍💻 Author
 
-**Brian Pereira Ventura**
+### **Brian Pereira Ventura**
 Data Analyst / Developer
 
 🔗 [LinkedIn](https://br.linkedin.com/in/brian-ventura-68081a25a)

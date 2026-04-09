@@ -1,27 +1,22 @@
 """
-main — Orquestrador do Pipeline ETL
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Coordena o fluxo completo:
-    1. Extract  → Pedidos (API ML) + Custos (Planilha)
-    2. Transform → Star Schema + Enriquecimento de custos
-    3. Load     → MySQL (Upsert + Atualização de custos)
+main — ETL Pipeline Orchestrator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Coordinates the complete flow:
+    1. Extract  → Orders (Marketplace API) + Costs (Spreadsheet/JSON)
+    2. Transform → Star Schema + Cost enrichment
+    3. Load     → MySQL (Upsert + Cost update)
 """
 
 import datetime
 import logging
 import sys
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
-# Garante que a raiz do projeto esteja no sys.path, independentemente
-# de como o script for executado (direto, python -m, VS Code, etc.)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from src.config.settings import get_caminho_custos, get_caminho_json_custos
 from src.extract.local_data import carregar_planilha_custos, carregar_json_custos
-from src.extract.mercadolivre_client import MercadoLivreClient
+from src.extract.marketplace_client import MercadoLivreClient
 from src.load.database import (
     atualizar_custos_no_banco,
     obter_ultima_data_pedido,
@@ -31,8 +26,8 @@ from src.transform.data_processor import (
     enriquecer_produtos_com_custos,
     processar_pedidos,
 )
-from src.atualizar_ads import atualizar_modulo_ads
-from src.atualizar_custos_operacionais import atualizar_modulo_operacional
+from src.jobs.run_ads_update import atualizar_modulo_ads
+from src.jobs.run_costs_update import atualizar_modulo_operacional
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -51,13 +46,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _calcular_data_retroativa(dias: int) -> str:
-    """Calcula a data no formato ISO 8601 voltando X dias a partir de agora.
+    """Calculates a retroactive ISO 8601 date from the current UTC time.
 
     Args:
-        dias: Quantidade de dias retroativos.
+        dias: Number of days to go back.
 
     Returns:
-        Data formatada para a API do Mercado Livre.
+        Date formatted for the marketplace API.
     """
     data_passada = datetime.datetime.now(
         datetime.timezone.utc
@@ -65,18 +60,78 @@ def _calcular_data_retroativa(dias: int) -> str:
     return data_passada.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
 
 
+def _carregar_custos_combinados() -> Optional[pd.DataFrame]:
+    """Loads cost data from all available sources and consolidates by SKU.
+
+    Reads both the Excel spreadsheet and JSON cost file, concatenates
+    them, and deduplicates by SKU (last occurrence wins).
+
+    Returns:
+        Consolidated DataFrame with 'sku' and 'custo' columns,
+        or None if no cost source is available.
+    """
+    dfs: list[pd.DataFrame] = []
+
+    try:
+        dfs.append(carregar_planilha_custos(get_caminho_custos()))
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("Planilha de custos indisponível (%s).", exc)
+
+    try:
+        dfs.append(carregar_json_custos(get_caminho_json_custos()))
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("JSON de custos indisponível (%s).", exc)
+
+    valid = [df for df in dfs if df is not None and not df.empty]
+    if not valid:
+        logger.warning("Custos não serão enriquecidos nesta execução.")
+        return None
+
+    df = pd.concat(valid, ignore_index=True)
+    df = df.drop_duplicates(subset=["sku"], keep="last")
+    logger.info("Custos consolidados de ambas as fontes: %d SKUs.", len(df))
+    return df
+
+
+def _despachar_modulo(
+    modulo_fn,
+    dt_inicio_str: Optional[str],
+    dt_fim_str: Optional[str],
+    dias: int,
+    escolha_bruta: str,
+) -> None:
+    """Dispatches an extraction module with the correct date parameters.
+
+    Centralizes the if/elif/else logic that determines whether to call
+    a job with explicit dates, retroactive days, or the default 30 days.
+
+    Args:
+        modulo_fn: Callable (e.g., atualizar_modulo_ads).
+        dt_inicio_str: Explicit start date string (YYYY-MM-DD), or None.
+        dt_fim_str: Explicit end date string (YYYY-MM-DD), or None.
+        dias: Number of retroactive days.
+        escolha_bruta: Raw user input string.
+    """
+    if dt_inicio_str and dt_fim_str:
+        modulo_fn(data_inicio_str=dt_inicio_str, data_fim_str=dt_fim_str)
+    elif escolha_bruta.strip().isdigit():
+        modulo_fn(dias_retroativos=dias)
+    else:
+        modulo_fn(dias_retroativos=30)
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
 def executar_pipeline() -> None:
-    """Executa o pipeline ETL completo."""
+    """Executes the complete ETL pipeline."""
 
     print("=====================================================")
     print("  Extrator de Dados do Mercado Livre — Start Data   ")
     print("=====================================================\n")
 
-    # --- Interface de escolha de período ---
+    # --- Period selection interface ---
     print("Escolha o período de extração:")
     print("[ ENTER  ] Incremental: Puxar a partir da última venda salva.")
     print("[ NÚMERO ] Retroativo: Quantos dias para trás deseja buscar.")
@@ -95,7 +150,7 @@ def executar_pipeline() -> None:
         dt_inicio_str = dt_inicio_str.strip()
         dt_fim_str = dt_fim_str.strip()
 
-        # Formato ISO obrigatório para a API de Pedidos do ML
+        # Explicit date range — ISO format required by the Orders API
         data_inicio = f"{dt_inicio_str}T00:00:00.000-00:00"
         data_fim = f"{dt_fim_str}T23:59:59.000-00:00"
         logger.info("Modo Intervalo: buscando de %s até %s.", dt_inicio_str, dt_fim_str)
@@ -130,50 +185,23 @@ def executar_pipeline() -> None:
             logger.info(
                 "Nenhum pedido novo encontrado. Banco já está atualizado!"
             )
-            # Mesmo sem pedidos novos, atualiza custos caso a planilha tenha mudado
-            _atualizar_custos_standalone()
-            
+            # Even without new orders, update costs if the spreadsheet changed
+            df_custos = _carregar_custos_combinados()
+            if df_custos is not None:
+                atualizados = atualizar_custos_no_banco(df_custos)
+                logger.info("Custos atualizados (standalone): %d produto(s).", atualizados)
+
             logger.info("Executando módulo de Ads (standalone)...")
-            if dt_inicio_str and dt_fim_str:
-                atualizar_modulo_ads(data_inicio_str=dt_inicio_str, data_fim_str=dt_fim_str)
-            elif escolha.strip().isdigit():
-                atualizar_modulo_ads(dias_retroativos=dias)
-            else:
-                atualizar_modulo_ads(dias_retroativos=30)
+            _despachar_modulo(atualizar_modulo_ads, dt_inicio_str, dt_fim_str, dias, escolha)
 
             logger.info("Executando módulo de Custos Operacionais (standalone)...")
-            if dt_inicio_str and dt_fim_str:
-                atualizar_modulo_operacional(data_inicio_str=dt_inicio_str, data_fim_str=dt_fim_str)
-            elif escolha.strip().isdigit():
-                atualizar_modulo_operacional(dias_retroativos=dias)
-            else:
-                atualizar_modulo_operacional(dias_retroativos=30)
+            _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
             print("\n🚀 Pipeline finalizado com sucesso (Modo Standalone)! Dados prontos para o Power BI.")
             return
 
         logger.info("Etapa 3/8: Extraindo fontes de custos...")
-        df_custos_planilha = None
-        df_custos_json = None
-        
-        try:
-            df_custos_planilha = carregar_planilha_custos(get_caminho_custos())
-        except (FileNotFoundError, ValueError) as exc:
-            logger.warning("Planilha de custos indisponível (%s).", exc)
-
-        try:
-            df_custos_json = carregar_json_custos(get_caminho_json_custos())
-        except (FileNotFoundError, ValueError) as exc:
-            logger.warning("JSON de custos indisponível (%s).", exc)
-
-        cost_dfs = [df for df in [df_custos_planilha, df_custos_json] if df is not None and not df.empty]
-        if cost_dfs:
-            df_custos = pd.concat(cost_dfs, ignore_index=True)
-            df_custos = df_custos.drop_duplicates(subset=["sku"], keep="last")
-            logger.info("Custos consolidados de ambas as fontes: %d SKUs.", len(df_custos))
-        else:
-            df_custos = None
-            logger.warning("Custos não serão enriquecidos nesta execução.")
+        df_custos = _carregar_custos_combinados()
 
         # ==============================================================
         # TRANSFORM
@@ -199,51 +227,16 @@ def executar_pipeline() -> None:
             logger.info("%d produto(s) com custo atualizado.", atualizados)
 
         logger.info("Etapa 7/8: Extraindo custos do Mercado Ads...")
-        if dt_inicio_str and dt_fim_str:
-            atualizar_modulo_ads(data_inicio_str=dt_inicio_str, data_fim_str=dt_fim_str)
-        elif escolha.strip().isdigit():
-            atualizar_modulo_ads(dias_retroativos=dias)
-        else:
-            atualizar_modulo_ads(dias_retroativos=30)
-        
+        _despachar_modulo(atualizar_modulo_ads, dt_inicio_str, dt_fim_str, dias, escolha)
+
         logger.info("Etapa 8/8: Extraindo Custos Operacionais (Full e Devoluções)...")
-        if dt_inicio_str and dt_fim_str:
-            atualizar_modulo_operacional(data_inicio_str=dt_inicio_str, data_fim_str=dt_fim_str)
-        elif escolha.strip().isdigit():
-            atualizar_modulo_operacional(dias_retroativos=dias)
-        else:
-            atualizar_modulo_operacional(dias_retroativos=30)
+        _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
         print("\n🚀 Pipeline finalizado com sucesso! Dados prontos para o Power BI.")
 
     except Exception as exc:
         logger.critical("Erro crítico durante a execução: %s", exc, exc_info=True)
         sys.exit(1)
-
-
-def _atualizar_custos_standalone() -> None:
-    """Atualiza custos mesmo quando não há pedidos novos."""
-    df_custos_planilha = None
-    df_custos_json = None
-    
-    try:
-        df_custos_planilha = carregar_planilha_custos(get_caminho_custos())
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning("Planilha de custos indisponível: %s", exc)
-
-    try:
-        df_custos_json = carregar_json_custos(get_caminho_json_custos())
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning("JSON de custos indisponível: %s", exc)
-
-    cost_dfs = [df for df in [df_custos_planilha, df_custos_json] if df is not None and not df.empty]
-    if cost_dfs:
-        df_custos = pd.concat(cost_dfs, ignore_index=True)
-        df_custos = df_custos.drop_duplicates(subset=["sku"], keep="last")
-        atualizados = atualizar_custos_no_banco(df_custos)
-        logger.info(
-            "Custos atualizados (standalone): %d produto(s).", atualizados
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 """
-Script Avulso: Atualização em Lote de Preços de Custo
-Lê o arquivo 'produtos_custo.xlsx' e atualiza a tabela tb_produto no MySQL.
+Standalone Script: Batch Cost Price Update
+Reads a cost spreadsheet and updates the tb_produto table in MySQL.
 """
 
 import sys
@@ -9,8 +9,8 @@ import pandas as pd
 from sqlalchemy import text
 import logging
 
-# Garante que a raiz do projeto esteja no path para importar o database.py
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensures project root is in sys.path when running as standalone script
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.load.database import conectar_mysql
 
@@ -26,28 +26,28 @@ def executar_upsert_custos():
 
     logger.info(f"Lendo arquivo: {caminho_arquivo}")
     
-    # 1. Injeta dtype=str para evitar inferência automática e truncamento indesejado nos SKUs originais.
+    # 1. Read as string to prevent automatic type inference and SKU truncation
     df = pd.read_excel(caminho_arquivo, dtype=str)
     df.columns = df.columns.str.lower().str.strip()
 
-    # Valida as colunas
+    # Validate columns
     if "sku" not in df.columns or "preco_custo" not in df.columns:
         logger.error("O arquivo deve conter as colunas exatas 'sku' e 'preco_custo'.")
         return
 
-    # 2. Limpeza e Transformação
-    # Remove os rastros de sufixos decimais típicos na exportação direta de planilhas.
+    # 2. Cleaning and Transformation
+    # Remove residual decimal suffixes from spreadsheet export
     df["sku"] = df["sku"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     
-    # Padroniza o separador decimal para ponto e converte para float.
+    # Standardize decimal separator to dot and convert to float
     df["preco_custo"] = df["preco_custo"].astype(str).str.strip().str.replace(",", ".", regex=False)
     df["preco_custo"] = pd.to_numeric(df["preco_custo"], errors="coerce")
 
-    # Remove linhas vazias ou inválidas
+    # Remove empty or invalid rows
     df = df.dropna(subset=["sku", "preco_custo"])
     df = df[df["sku"] != "nan"]
     
-    # Remove SKUs duplicados dentro da própria planilha, mantendo o último preço lido
+    # Remove duplicate SKUs within the spreadsheet, keeping the last price
     df = df.drop_duplicates(subset=["sku"], keep="last")
 
     if df.empty:
@@ -56,21 +56,21 @@ def executar_upsert_custos():
 
     logger.info(f"{len(df)} SKUs prontos para atualização no banco de dados.")
 
-    # 3. Injeção no Banco de Dados (Upsert / Update em lote)
+    # 3. Database Injection (Batch Upsert / Update)
     engine = conectar_mysql()
     try:
         with engine.begin() as conn:
-            # Cria a tabela temporária
+            # Create staging table
             df[["sku", "preco_custo"]].to_sql("stg_upsert_custos", con=conn, if_exists="replace", index=False)
 
-            # Executa o UPDATE cruzando a tabela temporária com a tb_produto
+            # Cross-join staging table with tb_produto for batch UPDATE
             resultado = conn.execute(text("""
                 UPDATE tb_produto p
                 INNER JOIN stg_upsert_custos c ON p.sku = c.sku
                 SET p.custo_unitario = c.preco_custo;
             """))
             
-            # Exclusão via banco da tabela de staging ('teardown' do lote).
+            # Staging table teardown
             conn.execute(text("DROP TABLE IF EXISTS stg_upsert_custos;"))
             
             logger.info(f"✅ SUCESSO: {resultado.rowcount} produtos tiveram seus custos atualizados no banco de dados!")

@@ -1,20 +1,15 @@
 """
-atualizar_custos_operacionais — Extração de Custos Operacionais (Full / Devoluções)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Extrai custos operacionais do extrato de billing do Mercado Livre:
-  - Armazenamento Full (STORAGE)
-  - Coleta Full / Fulfillment (FULFILLMENT)
-  - Custos de Devolução (RETURN)
+run_costs_update — Operational Costs Extraction Job
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Extracts operational costs from the billing API (monthly invoices)
+and persists aggregated values into the operational costs fact table.
 
-A API de Billing retorna dados agrupados por período mensal. Cada resposta
-contém um array 'charges' com os custos classificados por 'type'.
+Cost categories mapped:
+  - STORAGE       → Fulfillment warehouse storage fees
+  - FULFILLMENT   → Inbound/collection logistics fees
+  - RETURN        → Return shipping fees
+  - AFFILIATES    → Affiliate program commissions
 """
-
-import sys
-from pathlib import Path
-
-# Garante que a raiz do projeto esteja no sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import datetime
 import time
@@ -24,18 +19,24 @@ from typing import Any, Optional
 import pandas as pd
 import requests
 
-from src.extract.mercadolivre_client import MercadoLivreClient
+from src.extract.marketplace_client import MercadoLivreClient
 from src.load.database import salvar_custos_operacionais
+from src.config.settings import (
+    BILLING_BASE_URL,
+    REQUEST_TIMEOUT,
+    RATE_LIMIT_BACKOFF_SECONDS,
+    BILLING_GROUPS,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constantes
+# Constants
 # ---------------------------------------------------------------------------
-_BILLING_BASE_URL = "https://api.mercadolibre.com/billing/integration"
-_REQUEST_TIMEOUT = 15
+_BILLING_BASE_URL = BILLING_BASE_URL
+_REQUEST_TIMEOUT = REQUEST_TIMEOUT
 
-# Mapeamento: type da API → tipo_custo no banco de dados
+# Mapping: API charge type → cost category in the database
 _TIPO_CUSTO_MAP = {
     "STORAGE": "ARMAZENAMENTO_FULL",
     "FULFILLMENT": "COLETA_FULL",
@@ -46,7 +47,7 @@ _TIPO_CUSTO_MAP = {
     "PRODUCT_ADS_AFFILIATES": "CUSTO_AFILIADO",
 }
 
-# Labels alternativos (a API pode retornar variações)
+# Fallback label mapping for locale-variant API responses
 _LABEL_MAP = {
     "full storage": "ARMAZENAMENTO_FULL",
     "storage": "ARMAZENAMENTO_FULL",
@@ -69,19 +70,19 @@ _LABEL_MAP = {
 
 
 def _classificar_custo(tipo: str, label: str) -> Optional[str]:
-    """Classifica um charge da API em um dos 3 tipos operacionais.
+    """Classifies an API charge into one of the operational cost types.
 
-    Tenta primeiro pelo campo 'type', depois pelo 'label'.
+    Attempts matching by 'type' field first, then by 'label'.
 
     Returns:
-        Tipo normalizado ou None se não for custo operacional.
+        Normalized cost type or None if not an operational cost.
     """
-    # Tenta pelo type direto
+    # Match by type field
     tipo_upper = tipo.upper().strip()
     if tipo_upper in _TIPO_CUSTO_MAP:
         return _TIPO_CUSTO_MAP[tipo_upper]
 
-    # Tenta pelo label (busca parcial, case-insensitive)
+    # Fallback: partial match on label (case-insensitive)
     label_lower = label.lower().strip()
     for chave, valor in _LABEL_MAP.items():
         if chave in label_lower:
@@ -93,14 +94,14 @@ def _classificar_custo(tipo: str, label: str) -> Optional[str]:
 def _gerar_periodos_mensais(
     data_inicio: datetime.date, data_fim: datetime.date
 ) -> list[str]:
-    """Gera lista de períodos mensais no formato YYYY-MM-01 (Fallback)."""
+    """Generates a list of monthly periods in YYYY-MM-01 format (fallback)."""
     periodos = []
     cursor = data_inicio.replace(day=1)
     fim = data_fim.replace(day=1)
 
     while cursor <= fim:
         periodos.append(cursor.strftime("%Y-%m-%d"))
-        # Avança para o primeiro dia do próximo mês
+        # Advance to the first day of the next month
         if cursor.month == 12:
             cursor = cursor.replace(year=cursor.year + 1, month=1)
         else:
@@ -110,12 +111,12 @@ def _gerar_periodos_mensais(
 
 
 def _obter_periodos_validos_api(access_token: str) -> list[str]:
-    """Consulta o Mercado Livre para obter as chaves de faturamento oficiais abertas."""
+    """Queries the billing API for official open billing period keys."""
     url = f"{_BILLING_BASE_URL}/monthly/periods"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     periodos_unicos = set()
     
-    for grupo in ["ML", "MP"]:
+    for grupo in BILLING_GROUPS:
         params = {"group": grupo}
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
@@ -135,7 +136,7 @@ def _obter_periodos_validos_api(access_token: str) -> list[str]:
 
 
 def _buscar_summary_mensal(access_token: str, periodo: str) -> list[dict[str, Any]]:
-    # Rota oficial consolidada: /periods/key/{periodo}/summary/details
+    # Official consolidated route: /periods/key/{periodo}/summary/details
     url = f"{_BILLING_BASE_URL}/periods/key/{periodo}/summary/details"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     params = {"document_type": "BILL"}
@@ -151,8 +152,8 @@ def _buscar_summary_mensal(access_token: str, periodo: str) -> list[dict[str, An
                 todas_charges.extend(charges)
                 break
             elif resp.status_code == 429:
-                print(f"      -> Limite da API (429) no Summary. Aguardando 12s...")
-                time.sleep(12)
+                print(f"      -> Limite da API (429) no Summary. Aguardando {RATE_LIMIT_BACKOFF_SECONDS}s...")
+                time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
             else:
                 print(f"      -> Aviso: Summary indisponível (HTTP {resp.status_code}). Tentando details... ({resp.text})")
                 break
@@ -167,8 +168,8 @@ def _buscar_details_mensal(access_token: str, periodo: str) -> list[dict[str, An
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     todas_charges = []
     
-    for grupo in ["ML", "MP"]:
-        # Rota oficial de detalhes: /periods/key/{periodo}/group/{grupo}/details
+    for grupo in BILLING_GROUPS:
+        # Official detail route: /periods/key/{periodo}/group/{grupo}/details
         url = f"{_BILLING_BASE_URL}/periods/key/{periodo}/group/{grupo}/details"
         params = {
             "limit": 1000,
@@ -187,21 +188,21 @@ def _buscar_details_mensal(access_token: str, periodo: str) -> list[dict[str, An
                         todas_charges.extend(charges)
                     break
                 elif resp.status_code == 429:
-                    print(f"      -> Limite da API (429) no Details {grupo}. Aguardando 12s...")
-                    time.sleep(12)
+                    print(f"      -> Limite da API (429) no Details {grupo}. Aguardando {RATE_LIMIT_BACKOFF_SECONDS}s...")
+                    time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
                 else:
                     print(f"      -> Aviso: Details {grupo} indisponível (HTTP {resp.status_code}). ({resp.text})")
                     break
             except requests.exceptions.RequestException as exc:
                 print(f"      -> Falha de rede: {exc}")
                 break
-        time.sleep(1) # Pausa amigável entre requisições de grupos diferentes
+        time.sleep(1)  # Polite delay between group requests
 
     return todas_charges
 
 
 # ---------------------------------------------------------------------------
-# Orquestrador
+# Job orchestrator
 # ---------------------------------------------------------------------------
 
 def atualizar_modulo_operacional(
@@ -209,30 +210,30 @@ def atualizar_modulo_operacional(
     data_inicio_str: Optional[str] = None,
     data_fim_str: Optional[str] = None,
 ) -> None:
-    """Extrai custos operacionais (Full, Devoluções) do billing e salva no MySQL.
+    """Extracts operational costs (Fulfillment, Returns) from billing and saves to MySQL.
 
-    Fluxo:
-      1. Autenticação via MercadoLivreClient
-      2. Gera lista de períodos mensais
-      3. Para cada mês, busca summary e classifica os charges
-      4. Agrega por (data, tipo_custo) e salva no banco
+    Workflow:
+      1. Authentication via MercadoLivreClient
+      2. Generates monthly period list
+      3. For each month, fetches summary and classifies charges
+      4. Aggregates by (date, cost_type) and saves to database
 
     Args:
-        dias_retroativos: Dias para trás a buscar (default: 30).
-        data_inicio_str: Data início explícita AAAA-MM-DD.
-        data_fim_str: Data fim explícita AAAA-MM-DD.
+        dias_retroativos: Days to look back (default: 30).
+        data_inicio_str: Explicit start date YYYY-MM-DD.
+        data_fim_str: Explicit end date YYYY-MM-DD.
     """
     print("\n=========================================")
     print("   Módulo Extração - Custos Operacionais")
     print("=========================================\n")
 
     try:
-        # --- 1. Autenticação ---
+        # --- 1. Authentication ---
         print("1. Validando Token...")
         cliente_ml = MercadoLivreClient()
         access_token, _ = cliente_ml.obter_token_acesso()
 
-        # --- 2. Calcular datas ---
+        # --- 2. Calculate dates ---
         if data_inicio_str and data_fim_str:
             data_inicio = datetime.datetime.strptime(data_inicio_str, "%Y-%m-%d").date()
             data_fim = datetime.datetime.strptime(data_fim_str, "%Y-%m-%d").date()
@@ -243,14 +244,14 @@ def atualizar_modulo_operacional(
         str_inicio = data_inicio.strftime("%Y-%m-%d")
         str_fim = data_fim.strftime("%Y-%m-%d")
 
-        # --- 3. Consultar períodos oficiais ---
+        # --- 3. Query official periods ---
         print(f"2. Extraindo custos operacionais de {str_inicio} até {str_fim}...")
         print("   Consultando chaves de faturamento oficiais do Mercado Livre...")
         periodos_api = _obter_periodos_validos_api(access_token)
         
         periodos = []
         if periodos_api:
-            # Filtra apenas os períodos oficiais que caem na janela solicitada
+            # Filter official periods that fall within the requested window
             inicio_mes = data_inicio.replace(day=1)
             fim_mes = data_fim.replace(day=1)
             for p in periodos_api:
@@ -270,12 +271,12 @@ def atualizar_modulo_operacional(
         debug_impresso = False
 
         for idx, periodo in enumerate(periodos, start=1):
-            # Renova token a cada iteração para execuções longas
+            # Renew token per iteration for long-running executions
             access_token, _ = cliente_ml.obter_token_acesso()
 
             print(f"   [{idx}/{len(periodos)}] Período: {periodo}...", end=" ")
 
-            # Tenta summary primeiro, depois details como fallback
+            # Try summary first, then details as fallback
             charges = _buscar_summary_mensal(access_token, periodo)
             fonte = "summary"
 
@@ -287,14 +288,14 @@ def atualizar_modulo_operacional(
                 print("vazio")
                 continue
 
-            # Debug: mostra primeiro charge na primeira vez
+            # Debug: show first charge on first occurrence
             if not debug_impresso:
                 print(f"\n   [DEBUG] Fonte: {fonte} | 1º charge: {charges[0]}")
                 debug_impresso = True
 
-            # Extrai o primeiro dia do período como data_metrica
-            # (billing é mensal, mas atribuímos ao 1º dia do mês)
-            periodo_date = periodo  # já é YYYY-MM-DD (primeiro dia do mês)
+            # Extract the first day of the period as data_metrica
+            # (billing is monthly, attributed to the 1st day of the month)
+            periodo_date = periodo  # Already YYYY-MM-DD (first day of month)
 
             registros_periodo = 0
 
@@ -306,9 +307,9 @@ def atualizar_modulo_operacional(
                 tipo_custo = _classificar_custo(tipo_raw, label_raw)
 
                 if tipo_custo is None:
-                    continue  # Não é custo operacional (ex: comissão de venda)
+                    continue  # Not an operational cost (e.g., sales commission)
 
-                # Garante valor absoluto (positivo) para o BI
+                # Ensure absolute (positive) value for BI reporting
                 valor = abs(float(amount)) if amount else 0.0
 
                 dados_op.append({
@@ -323,7 +324,7 @@ def atualizar_modulo_operacional(
             elif debug_impresso:
                 print("nenhum custo operacional neste período")
 
-        # --- 4. Agregar e salvar ---
+        # --- 4. Aggregate and save ---
         if not dados_op:
             print("   -> Nenhum custo operacional encontrado para este período.")
             print("   -> O pipeline continuará normalmente.\n")
@@ -331,7 +332,7 @@ def atualizar_modulo_operacional(
 
         df_op = pd.DataFrame(dados_op)
 
-        # Agrega: SUM dos valores por (data_metrica, tipo_custo)
+        # Aggregate: SUM values by (data_metrica, tipo_custo)
         df_op = (
             df_op
             .groupby(["data_metrica", "tipo_custo"], as_index=False)
@@ -360,7 +361,7 @@ def atualizar_modulo_operacional(
 
 
 # ---------------------------------------------------------------------------
-# Entry point (execução standalone)
+# Entry point (standalone execution)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

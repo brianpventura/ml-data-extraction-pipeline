@@ -1,9 +1,9 @@
 """
-extract.mercadolivre_client
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Cliente HTTP para a API do Mercado Livre.
-Foca exclusivamente em fazer requisições e retornar dados brutos
-(JSON / dicionários). Nenhuma regra de negócio deve existir aqui.
+extract.marketplace_client
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+HTTP client for the marketplace REST API.
+Handles authentication (OAuth 2.0), paginated order retrieval,
+and shipping cost enrichment. Returns raw JSON data only.
 """
 
 import logging
@@ -18,6 +18,13 @@ from src.config.settings import (
     AUTHORIZATION_CODE,
     CLIENT_SECRET,
     REDIRECT_URI,
+    API_BASE_URL,
+    REQUEST_TIMEOUT,
+    SHIPPING_TIMEOUT,
+    RETRY_DELAY_SECONDS,
+    THROTTLE_DELAY_SECONDS,
+    MAX_TOKEN_RETRIES,
+    MAX_NETWORK_RETRIES,
     carregar_tokens,
     salvar_tokens,
 )
@@ -25,25 +32,18 @@ from src.config.settings import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constantes da API
+# API constants
 # ---------------------------------------------------------------------------
-_BASE_URL = "https://api.mercadolibre.com"
-_TOKEN_URL = f"{_BASE_URL}/oauth/token"
-_ORDERS_URL = f"{_BASE_URL}/orders/search"
-_SHIPMENTS_URL = f"{_BASE_URL}/shipments"
+_TOKEN_URL = f"{API_BASE_URL}/oauth/token"
+_ORDERS_URL = f"{API_BASE_URL}/orders/search"
+_SHIPMENTS_URL = f"{API_BASE_URL}/shipments"
 
 _PAGE_LIMIT = 50
 _OFFSET_CEILING = 9950
-_REQUEST_TIMEOUT = 15
-_SHIPPING_TIMEOUT = 10
-_RETRY_DELAY = 5
-_THROTTLE_DELAY = 0.5
-_MAX_TOKEN_RETRIES = 3
-_MAX_NETWORK_RETRIES = 5
 
 
 class MercadoLivreClient:
-    """Encapsula autenticação e requisições à API do Mercado Livre."""
+    """Encapsulates authentication and requests to the marketplace API."""
 
     def __init__(self) -> None:
         self._access_token: Optional[str] = None
@@ -51,21 +51,21 @@ class MercadoLivreClient:
         self._headers: dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    # Autenticação
+    # Authentication
     # ------------------------------------------------------------------
 
     def obter_token_acesso(self) -> tuple[str, int]:
-        """Obtém ou renova o token de acesso via OAuth 2.0.
+        """Obtains or refreshes the access token via OAuth 2.0.
 
-        Usa o refresh_token se disponível em tokens.json, caso contrário
-        executa o fluxo inicial com authorization_code.
+        Attempts renewal via refresh_token if persisted locally.
+        Falls back to the initial authorization_code grant otherwise.
 
         Returns:
-            Tupla (access_token, user_id).
+            Tuple of (access_token, user_id).
 
         Raises:
-            RuntimeError: Se a API retornar status diferente de 200.
-            requests.exceptions.RequestException: Se houver falha de rede.
+            RuntimeError: If the API returns a non-200 status.
+            requests.exceptions.RequestException: On network failure.
         """
         headers = {
             "accept": "application/json",
@@ -91,7 +91,7 @@ class MercadoLivreClient:
             }
 
         response = requests.post(
-            _TOKEN_URL, headers=headers, data=payload, timeout=_REQUEST_TIMEOUT
+            _TOKEN_URL, headers=headers, data=payload, timeout=REQUEST_TIMEOUT
         )
 
         if response.status_code == 200:
@@ -105,13 +105,13 @@ class MercadoLivreClient:
                 dados["refresh_token"],
                 dados["user_id"],
             )
-            logger.info("Token de acesso obtido/renovado com sucesso.")
+            logger.info("Access token obtained/renewed successfully.")
             return self._access_token, self._user_id
         else:
             raise RuntimeError(f"Erro ao obter token (HTTP {response.status_code}): {response.text}")
 
     # ------------------------------------------------------------------
-    # Extração de pedidos
+    # Order extraction
     # ------------------------------------------------------------------
 
     def buscar_todos_pedidos(
@@ -119,20 +119,20 @@ class MercadoLivreClient:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Busca histórico de vendas com paginação automática e enriquece
-        cada pedido com o custo real de frete.
+        """Fetches order history with automatic pagination and enriches
+        each order with the actual shipping cost.
 
         Args:
-            date_from: Data inicial no formato ISO 8601 da API do ML.
-            date_to: Data final no formato ISO 8601 da API do ML.
+            date_from: Start date in the API's ISO 8601 format.
+            date_to: End date in the API's ISO 8601 format.
 
         Returns:
-            Lista de dicionários (pedidos brutos) com campo extra
-            ``custo_frete_real`` adicionado.
+            List of raw order dictionaries with an extra
+            ``custo_frete_real`` field added.
 
         Raises:
-            RuntimeError: Se o token não foi inicializado ou se a API
-                retorna erro não recuperável.
+            RuntimeError: If the token was not initialized or the API
+                returns an unrecoverable error.
         """
         if not self._access_token or not self._user_id:
             raise RuntimeError(
@@ -145,13 +145,13 @@ class MercadoLivreClient:
         tentativas_token = 0
         tentativas_rede = 0
 
-        logger.info("Iniciando varredura de pedidos e custos de frete...")
+        logger.info("Starting order extraction with shipping cost enrichment...")
 
-        # Descobrir total esperado para a barra de progresso
+        # Initial probe to determine expected total for progress bar
         total_esperado = self._obter_total_pedidos(date_from)
         pbar = tqdm(
             total=total_esperado,
-            desc="Extraindo Pedidos",
+            desc="Extracting Orders",
             unit="ped",
             colour="green",
         )
@@ -174,29 +174,29 @@ class MercadoLivreClient:
                         _ORDERS_URL,
                         headers=self._headers,
                         params=params,
-                        timeout=_REQUEST_TIMEOUT,
+                        timeout=REQUEST_TIMEOUT,
                     )
 
-                    # Token expirado — renova automaticamente (com limite)
+                    # HTTP 401: automatic token renewal with retry cap
                     if response.status_code == 401:
                         tentativas_token += 1
-                        if tentativas_token > _MAX_TOKEN_RETRIES:
+                        if tentativas_token > MAX_TOKEN_RETRIES:
                             raise RuntimeError(
-                                f"Falha ao renovar token após {_MAX_TOKEN_RETRIES} "
+                                f"Falha ao renovar token após {MAX_TOKEN_RETRIES} "
                                 f"tentativas. Verifique suas credenciais."
                             )
                         tqdm.write(
                             f"[!] Token expirado! Renovando acesso "
-                            f"(tentativa {tentativas_token}/{_MAX_TOKEN_RETRIES})..."
+                            f"(tentativa {tentativas_token}/{MAX_TOKEN_RETRIES})..."
                         )
                         self.obter_token_acesso()
                         continue
 
-                    # Reseta contador de token em caso de sucesso
+                    # Reset token retry counter on success
                     tentativas_token = 0
 
                     if response.status_code == 200:
-                        # Reseta contador de rede em caso de sucesso
+                        # Reset network retry counter on success
                         tentativas_rede = 0
                         resultados: list[dict] = response.json().get("results", [])
 
@@ -213,7 +213,7 @@ class MercadoLivreClient:
                         if len(resultados) < _PAGE_LIMIT:
                             break
 
-                        # Deslocamento dinâmico do ponteiro de paginação (date_to) visando mitigar o *hard-limit* de 10.000 offsets estabelecido pela API principal.
+                        # Dynamic date_to pivot to mitigate the API's hard offset limit of 10,000
                         if offset + _PAGE_LIMIT >= _OFFSET_CEILING:
                             data_ultimo = resultados[-1].get("date_created")
                             tqdm.write(
@@ -232,32 +232,32 @@ class MercadoLivreClient:
 
                 except requests.exceptions.RequestException as exc:
                     tentativas_rede += 1
-                    if tentativas_rede > _MAX_NETWORK_RETRIES:
+                    if tentativas_rede > MAX_NETWORK_RETRIES:
                         raise RuntimeError(
-                            f"Rede instável após {_MAX_NETWORK_RETRIES} "
+                            f"Rede instável após {MAX_NETWORK_RETRIES} "
                             f"tentativas consecutivas. Última falha: {exc}"
                         ) from exc
                     tqdm.write(
                         f"-> Instabilidade na rede ({tentativas_rede}/"
-                        f"{_MAX_NETWORK_RETRIES}). "
-                        f"Aguardando {_RETRY_DELAY}s... ({exc})"
+                        f"{MAX_NETWORK_RETRIES}). "
+                        f"Aguardando {RETRY_DELAY_SECONDS}s... ({exc})"
                     )
-                    time.sleep(_RETRY_DELAY)
+                    time.sleep(RETRY_DELAY_SECONDS)
                     continue
 
-                time.sleep(_THROTTLE_DELAY)
+                time.sleep(THROTTLE_DELAY_SECONDS)
         finally:
             pbar.close()
 
-        logger.info("Extração finalizada: %d pedidos obtidos.", len(todos_pedidos))
+        logger.info("Extraction complete: %d orders retrieved.", len(todos_pedidos))
         return todos_pedidos
 
     # ------------------------------------------------------------------
-    # Métodos privados
+    # Private methods
     # ------------------------------------------------------------------
 
     def _obter_total_pedidos(self, date_from: Optional[str]) -> int:
-        """Faz uma requisição leve (limit=1) para descobrir o total de pedidos."""
+        """Probes the API (limit=1) to discover the expected total order count."""
         try:
             params: dict[str, Any] = {"seller": self._user_id, "limit": 1}
             if date_from:
@@ -267,20 +267,20 @@ class MercadoLivreClient:
                 _ORDERS_URL,
                 headers=self._headers,
                 params=params,
-                timeout=_REQUEST_TIMEOUT,
+                timeout=REQUEST_TIMEOUT,
             )
             return resp.json().get("paging", {}).get("total", 1000)
         except Exception:
             return 1000
 
     def _buscar_custo_frete(self, pedido: dict[str, Any]) -> float:
-        """Busca o custo real de frete via API de Shipments.
+        """Retrieves the actual shipping cost via the Shipments API.
 
         Args:
-            pedido: Dicionário bruto de um pedido.
+            pedido: Raw order dictionary.
 
         Returns:
-            Custo de frete em reais (float). Retorna 0.0 se indisponível.
+            Shipping cost as a float. Returns 0.0 if unavailable.
         """
         shipping_id = pedido.get("shipping", {}).get("id")
         if not shipping_id:
@@ -289,7 +289,7 @@ class MercadoLivreClient:
         try:
             url = f"{_SHIPMENTS_URL}/{shipping_id}"
             resp = requests.get(
-                url, headers=self._headers, timeout=_SHIPPING_TIMEOUT
+                url, headers=self._headers, timeout=SHIPPING_TIMEOUT
             )
 
             if resp.status_code == 200:

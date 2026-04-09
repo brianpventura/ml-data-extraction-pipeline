@@ -1,8 +1,9 @@
 """
 extract.local_data
 ~~~~~~~~~~~~~~~~~~
-Responsável por ler fontes de dados locais (planilhas, arquivos CSV, etc.).
-Retorna DataFrames limpos e padronizados, sem aplicar regras de negócio.
+Local data source readers.
+Loads cost data from Excel and JSON files into standardized
+DataFrames with validated schemas. No business logic applied.
 """
 
 import logging
@@ -14,22 +15,20 @@ logger = logging.getLogger(__name__)
 
 
 def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
-    """Lê a planilha de custos (material/custo.xlsx) e retorna um DataFrame
-    com as colunas padronizadas.
+    """Reads a cost spreadsheet (.xlsx) and returns a standardized DataFrame.
 
-    O SKU é tratado como texto para evitar problemas de conversão numérica
-    do Excel (ex: ``1010003`` lido como ``1010003.0``).
+    SKU values are read as text to prevent automatic numeric inference
+    (e.g., ``1010003`` being read as ``1010003.0``).
 
     Args:
-        caminho: Caminho absoluto ou relativo para o arquivo .xlsx.
+        caminho: Absolute or relative path to the .xlsx file.
 
     Returns:
-        DataFrame com pelo menos as colunas ``sku`` (str) e ``custo`` (float).
+        DataFrame with at least ``sku`` (str) and ``custo`` (float) columns.
 
     Raises:
-        FileNotFoundError: Se o arquivo não existir no caminho informado.
-        ValueError: Se as colunas obrigatórias ``sku`` e ``custo`` não
-            forem encontradas na planilha.
+        FileNotFoundError: If the file does not exist.
+        ValueError: If required columns ``sku`` and ``custo`` are missing.
     """
     caminho = Path(caminho)
 
@@ -38,15 +37,15 @@ def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
             f"Planilha de custos não encontrada: {caminho}"
         )
 
-    logger.info("Lendo planilha de custos: %s", caminho)
+    logger.info("Reading cost spreadsheet: %s", caminho)
 
-    # Lê tudo como string para preservar integridade dos SKUs
+    # Read all columns as string to preserve SKU integrity
     df = pd.read_excel(caminho, dtype=str)
 
-    # Padroniza nomes de colunas
+    # Standardize column names
     df.columns = df.columns.str.lower().str.strip()
 
-    # Valida colunas obrigatórias
+    # Validate required columns
     colunas_obrigatorias = {"sku", "custo"}
     colunas_encontradas = set(df.columns)
     faltando = colunas_obrigatorias - colunas_encontradas
@@ -57,7 +56,7 @@ def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
             f"Colunas disponíveis: {list(df.columns)}"
         )
 
-    # Limpa SKU — remove .0 residual do Excel e espaços
+    # Clean SKU — remove residual .0 suffix from Excel and whitespace
     df["sku"] = (
         df["sku"]
         .astype(str)
@@ -65,7 +64,7 @@ def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
         .str.replace(r"\.0$", "", regex=True)
     )
 
-    # Converte custo para float (aceita vírgula como separador decimal)
+    # Convert cost to float (accepts comma as decimal separator)
     df["custo"] = (
         df["custo"]
         .astype(str)
@@ -74,12 +73,12 @@ def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
     )
     df["custo"] = pd.to_numeric(df["custo"], errors="coerce")
 
-    # Remove linhas sem SKU válido ou sem custo numérico
+    # Remove rows without a valid SKU or numeric cost
     df = df.dropna(subset=["sku", "custo"])
     df = df[df["sku"] != "nan"]
 
     logger.info(
-        "Planilha carregada: %d registros de custos válidos.", len(df)
+        "Spreadsheet loaded: %d valid cost records.", len(df)
     )
 
     return df
@@ -97,7 +96,7 @@ def carregar_json_custos(caminho: Path) -> pd.DataFrame:
     if "sku" not in df.columns or "preco_custo" not in df.columns:
         raise ValueError("O JSON deve conter as chaves 'sku' e 'preco_custo'.")
 
-    # Padroniza a coluna para o restante do pipeline
+    # Standardize column name to match pipeline convention
     df = df.rename(columns={"preco_custo": "custo"})
 
     df["sku"] = df["sku"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
@@ -105,5 +104,5 @@ def carregar_json_custos(caminho: Path) -> pd.DataFrame:
 
     df = df.dropna(subset=["sku", "custo"])
     df = df[df["sku"] != "nan"]
-    logger.info("JSON carregado: %d registros de custos válidos.", len(df))
+    logger.info("JSON loaded: %d valid cost records.", len(df))
     return df

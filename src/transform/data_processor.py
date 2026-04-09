@@ -1,12 +1,13 @@
 """
 transform.data_processor
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-Camada de transformação do pipeline ETL.
-Recebe dados brutos (API + planilha) e aplica limpeza, tipagem,
-cruzamento (merge) e regras de negócio.
+Transform layer of the ETL pipeline.
+Receives raw API responses and local cost data, applies cleaning,
+type casting, dimensional modeling (Star Schema), and cost
+enrichment via SKU-based joins.
 
-Retorna estruturas prontas para inserção no banco de dados.
-Não faz acesso a API nem a banco de dados.
+Returns structures ready for database insertion.
+No API access or database operations belong here.
 """
 
 import logging
@@ -18,21 +19,21 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Transformação principal — Star Schema
+# Main transformation — Star Schema
 # ---------------------------------------------------------------------------
 
 def processar_pedidos(
     dados_brutos: list[dict[str, Any]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Transforma a lista de pedidos brutos da API em 4 DataFrames
-    seguindo o Star Schema (Clientes, Produtos, Pedidos, Itens).
+    """Transforms raw API orders into 4 DataFrames following the
+    Star Schema model (Customers, Products, Orders, Items).
 
     Args:
-        dados_brutos: Lista de dicionários retornados pela API do ML,
-            já enriquecidos com o campo ``custo_frete_real``.
+        dados_brutos: List of dictionaries from the marketplace API,
+            already enriched with the ``custo_frete_real`` field.
 
     Returns:
-        Tupla de 4 DataFrames:
+        Tuple of 4 DataFrames:
         ``(df_clientes, df_produtos, df_pedidos, df_itens_pedido)``
     """
     clientes: list[dict] = []
@@ -47,7 +48,7 @@ def processar_pedidos(
         total_pago_comprador = pedido.get("paid_amount", 0.0)
         total_produtos = pedido.get("total_amount", 0.0)
 
-        # --- 1. Cliente (Dimensão) ---
+        # --- 1. Customer (Dimension) ---
         comprador = pedido.get("buyer", {})
         id_cliente = comprador.get("id")
         nickname = comprador.get("nickname", "")
@@ -56,16 +57,16 @@ def processar_pedidos(
             {
                 "id_cliente": id_cliente,
                 "nickname": nickname,
-                "nome_completo": "",  # Preenchimento padrão (dados omitidos pela origem).
+                "nome_completo": "",  # Default placeholder (omitted by source).
             }
         )
 
-        # --- 2. Custo de frete (maior entre extrato financeiro e envio) ---
+        # --- 2. Shipping cost (higher of financial extract vs. shipment) ---
         frete_financeiro = _extrair_frete_financeiro(pedido)
         frete_multiget = pedido.get("custo_frete_real", 0.0)
         frete_final = max(frete_financeiro, frete_multiget)
 
-        # --- 3. Pedido (Fato Cabeçalho) ---
+        # --- 3. Order (Fact Header) ---
         pedidos.append(
             {
                 "id_pedido": id_pedido,
@@ -78,7 +79,7 @@ def processar_pedidos(
             }
         )
 
-        # --- 4. Itens e Produtos (Dimensão + Fato Linha) ---
+        # --- 4. Items and Products (Dimension + Fact Line) ---
         for item in pedido.get("order_items", []):
             produto = item.get("item", {})
             id_produto = produto.get("id")
@@ -88,7 +89,7 @@ def processar_pedidos(
                     "id_produto": id_produto,
                     "sku": produto.get("seller_sku", ""),
                     "descricao": produto.get("title", ""),
-                    "custo_unitario": 0.00,  # preenchido via merge de custos
+                    "custo_unitario": 0.00,  # Populated via cost merge
                 }
             )
 
@@ -102,13 +103,13 @@ def processar_pedidos(
                 }
             )
 
-    # Converte para DataFrames
+    # Convert to DataFrames
     df_clientes = pd.DataFrame(clientes)
     df_produtos = pd.DataFrame(produtos)
     df_pedidos = pd.DataFrame(pedidos)
     df_itens_pedido = pd.DataFrame(itens_pedido)
 
-    # Remove duplicatas das dimensões (mantém o registro mais recente)
+    # Deduplicate dimensions (keep most recent record)
     if not df_clientes.empty:
         df_clientes = df_clientes.drop_duplicates(
             subset=["id_cliente"], keep="last"
@@ -132,26 +133,26 @@ def processar_pedidos(
 
 
 # ---------------------------------------------------------------------------
-# Enriquecimento de custos via planilha
+# Cost enrichment via spreadsheet
 # ---------------------------------------------------------------------------
 
 def enriquecer_produtos_com_custos(
     df_produtos: pd.DataFrame,
     df_custos: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Cruza a dimensão de produtos com a planilha de custos pelo SKU,
-    preenchendo a coluna ``custo_unitario``.
+    """Joins the product dimension with the cost DataFrame by SKU,
+    populating the ``custo_unitario`` column.
 
-    Utiliza ``pd.merge`` (left join) para associar cada produto ao seu
-    custo, sem perder produtos que não tenham correspondência na planilha.
+    Uses ``pd.merge`` (left join) to associate each product with its
+    cost, without losing products that have no match.
 
     Args:
-        df_produtos: DataFrame de produtos (saída de ``processar_pedidos``).
-        df_custos: DataFrame de custos (saída de ``carregar_planilha_custos``).
+        df_produtos: Product DataFrame (output of ``processar_pedidos``).
+        df_custos: Cost DataFrame (output of ``carregar_planilha_custos``).
 
     Returns:
-        DataFrame de produtos com ``custo_unitario`` preenchido onde
-        houver correspondência de SKU.
+        Product DataFrame with ``custo_unitario`` populated where
+        a SKU match was found.
     """
     if df_produtos.empty:
         logger.warning("DataFrame de produtos está vazio. Merge ignorado.")
@@ -161,10 +162,10 @@ def enriquecer_produtos_com_custos(
         logger.warning("DataFrame de custos está vazio. Merge ignorado.")
         return df_produtos
 
-    # Trabalha em cópia para não modificar o DataFrame original do chamador
+    # Work on a copy to avoid mutating the caller's DataFrame
     df_produtos = df_produtos.copy()
 
-    # Normaliza SKU nos produtos para garantir match
+    # Normalize SKU in products to ensure match
     df_produtos["sku_normalizado"] = (
         df_produtos["sku"]
         .astype(str)
@@ -172,13 +173,13 @@ def enriquecer_produtos_com_custos(
         .str.replace(r"\.0$", "", regex=True)
     )
 
-    # Prepara a planilha de custos para o merge
+    # Prepare cost DataFrame for the merge
     df_custos_merge = df_custos[["sku", "custo"]].copy()
     df_custos_merge = df_custos_merge.rename(
         columns={"custo": "custo_planilha"}
     )
 
-    # Left join — preserva todos os produtos
+    # Left join — preserves all products
     df_merged = df_produtos.merge(
         df_custos_merge,
         left_on="sku_normalizado",
@@ -187,13 +188,13 @@ def enriquecer_produtos_com_custos(
         suffixes=("", "_custo"),
     )
 
-    # Preenche custo_unitario onde houver correspondência
+    # Populate custo_unitario where a match was found
     mask = df_merged["custo_planilha"].notna()
     df_merged.loc[mask, "custo_unitario"] = df_merged.loc[
         mask, "custo_planilha"
     ]
 
-    # Remove colunas auxiliares
+    # Drop auxiliary columns
     colunas_drop = ["sku_normalizado", "sku_custo", "custo_planilha"]
     colunas_existentes = [c for c in colunas_drop if c in df_merged.columns]
     df_merged = df_merged.drop(columns=colunas_existentes)
@@ -209,20 +210,20 @@ def enriquecer_produtos_com_custos(
 
 
 # ---------------------------------------------------------------------------
-# Funções auxiliares privadas
+# Private helper functions
 # ---------------------------------------------------------------------------
 
 def _extrair_frete_financeiro(pedido: dict[str, Any]) -> float:
-    """Extrai o custo de frete embutido nas tarifas financeiras do pedido.
+    """Extracts shipping cost embedded in the order's financial fees.
 
-    O Mercado Livre pode reportar o custo de frete sob os tipos
-    ``shipping_fee`` ou ``shipping_cost`` dentro de ``fee_details``.
+    The marketplace may report shipping cost under the
+    ``shipping_fee`` or ``shipping_cost`` types within ``fee_details``.
 
     Args:
-        pedido: Dicionário bruto de um pedido da API.
+        pedido: Raw order dictionary from the API.
 
     Returns:
-        Custo de frete financeiro em reais (float).
+        Financial shipping cost as a float.
     """
     tarifas = pedido.get("fee_details", [])
     frete = 0.0

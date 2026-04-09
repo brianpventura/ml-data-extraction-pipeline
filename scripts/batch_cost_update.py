@@ -1,6 +1,6 @@
 """
 Standalone Script: Batch Cost Price Update
-Reads a cost spreadsheet and updates the tb_produto table in MySQL.
+Reads a cost spreadsheet and updates the dim_produto table in MySQL.
 """
 
 import sys
@@ -63,9 +63,9 @@ def executar_upsert_custos():
             # Create staging table
             df[["sku", "preco_custo"]].to_sql("stg_upsert_custos", con=conn, if_exists="replace", index=False)
 
-            # Cross-join staging table with tb_produto for batch UPDATE
+            # Cross-join staging table with dim_produto for batch UPDATE
             resultado = conn.execute(text("""
-                UPDATE tb_produto p
+                UPDATE dim_produto p
                 INNER JOIN stg_upsert_custos c ON p.sku = c.sku
                 SET p.custo_unitario = c.preco_custo;
             """))

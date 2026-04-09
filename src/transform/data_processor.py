@@ -34,7 +34,7 @@ def processar_pedidos(
 
     Returns:
         Tuple of 4 DataFrames:
-        ``(df_clientes, df_produtos, df_pedidos, df_itens_pedido)``
+        ``(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)``
     """
     clientes: list[dict] = []
     produtos: list[dict] = []
@@ -104,32 +104,32 @@ def processar_pedidos(
             )
 
     # Convert to DataFrames
-    df_clientes = pd.DataFrame(clientes)
-    df_produtos = pd.DataFrame(produtos)
-    df_pedidos = pd.DataFrame(pedidos)
-    df_itens_pedido = pd.DataFrame(itens_pedido)
+    df_dim_cliente = pd.DataFrame(clientes)
+    df_dim_produto = pd.DataFrame(produtos)
+    df_fato_pedido = pd.DataFrame(pedidos)
+    df_fato_itens_pedido = pd.DataFrame(itens_pedido)
 
     # Deduplicate dimensions (keep most recent record)
-    if not df_clientes.empty:
-        df_clientes = df_clientes.drop_duplicates(
+    if not df_dim_cliente.empty:
+        df_dim_cliente = df_dim_cliente.drop_duplicates(
             subset=["id_cliente"], keep="last"
         )
 
-    if not df_produtos.empty:
-        df_produtos = df_produtos.drop_duplicates(
+    if not df_dim_produto.empty:
+        df_dim_produto = df_dim_produto.drop_duplicates(
             subset=["id_produto"], keep="last"
         )
 
     logger.info(
         "Processamento concluído — Clientes: %d | Produtos: %d | "
         "Pedidos: %d | Itens: %d",
-        len(df_clientes),
-        len(df_produtos),
-        len(df_pedidos),
-        len(df_itens_pedido),
+        len(df_dim_cliente),
+        len(df_dim_produto),
+        len(df_fato_pedido),
+        len(df_fato_itens_pedido),
     )
 
-    return df_clientes, df_produtos, df_pedidos, df_itens_pedido
+    return df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def processar_pedidos(
 # ---------------------------------------------------------------------------
 
 def enriquecer_produtos_com_custos(
-    df_produtos: pd.DataFrame,
+    df_dim_produto: pd.DataFrame,
     df_custos: pd.DataFrame,
 ) -> pd.DataFrame:
     """Joins the product dimension with the cost DataFrame by SKU,
@@ -147,27 +147,27 @@ def enriquecer_produtos_com_custos(
     cost, without losing products that have no match.
 
     Args:
-        df_produtos: Product DataFrame (output of ``processar_pedidos``).
+        df_dim_produto: Product DataFrame (output of ``processar_pedidos``).
         df_custos: Cost DataFrame (output of ``carregar_planilha_custos``).
 
     Returns:
         Product DataFrame with ``custo_unitario`` populated where
         a SKU match was found.
     """
-    if df_produtos.empty:
+    if df_dim_produto.empty:
         logger.warning("DataFrame de produtos está vazio. Merge ignorado.")
-        return df_produtos
+        return df_dim_produto
 
     if df_custos.empty:
         logger.warning("DataFrame de custos está vazio. Merge ignorado.")
-        return df_produtos
+        return df_dim_produto
 
     # Work on a copy to avoid mutating the caller's DataFrame
-    df_produtos = df_produtos.copy()
+    df_dim_produto = df_dim_produto.copy()
 
     # Normalize SKU in products to ensure match
-    df_produtos["sku_normalizado"] = (
-        df_produtos["sku"]
+    df_dim_produto["sku_normalizado"] = (
+        df_dim_produto["sku"]
         .astype(str)
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
@@ -180,7 +180,7 @@ def enriquecer_produtos_com_custos(
     )
 
     # Left join — preserves all products
-    df_merged = df_produtos.merge(
+    df_merged = df_dim_produto.merge(
         df_custos_merge,
         left_on="sku_normalizado",
         right_on="sku",

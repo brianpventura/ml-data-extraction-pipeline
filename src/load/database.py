@@ -49,12 +49,12 @@ def criar_tabelas(engine: Engine) -> None:
     """Creates the Star Schema tables if they do not already exist.
 
     Tables created:
-        - ``tb_cliente`` (Dimension)
-        - ``tb_produto`` (Dimension)
-        - ``tb_pedido`` (Fact — header)
-        - ``tb_itens_pedido`` (Fact — line item)
-        - ``tb_custos_ads`` (Fact — daily advertising costs)
-        - ``tb_custos_operacionais`` (Fact — operational costs)
+        - ``dim_cliente`` (Dimension)
+        - ``dim_produto`` (Dimension)
+        - ``fato_pedido`` (Fact — header)
+        - ``fato_itens_pedido`` (Fact — line item)
+        - ``fato_custos_ads`` (Fact — daily advertising costs)
+        - ``fato_custos_operacionais`` (Fact — operational costs)
 
     Args:
         engine: SQLAlchemy Engine connected to MySQL.
@@ -62,7 +62,7 @@ def criar_tabelas(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_cliente (
+                CREATE TABLE IF NOT EXISTS dim_cliente (
                     id_cliente BIGINT PRIMARY KEY,
                     nickname VARCHAR(100) NOT NULL,
                     nome_completo VARCHAR(255)
@@ -72,7 +72,7 @@ def criar_tabelas(engine: Engine) -> None:
 
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_produto (
+                CREATE TABLE IF NOT EXISTS dim_produto (
                     id_produto VARCHAR(50) PRIMARY KEY,
                     sku VARCHAR(100),
                     descricao VARCHAR(255) NOT NULL,
@@ -83,7 +83,7 @@ def criar_tabelas(engine: Engine) -> None:
 
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_pedido (
+                CREATE TABLE IF NOT EXISTS fato_pedido (
                     id_pedido BIGINT PRIMARY KEY,
                     id_cliente BIGINT,
                     data_criacao DATETIME NOT NULL,
@@ -91,22 +91,22 @@ def criar_tabelas(engine: Engine) -> None:
                     valor_produtos DECIMAL(10,2) NOT NULL,
                     custo_frete DECIMAL(10,2) DEFAULT 0.00,
                     total_pago_comprador DECIMAL(10,2) NOT NULL,
-                    FOREIGN KEY (id_cliente) REFERENCES tb_cliente(id_cliente)
+                    FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
         )
 
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_itens_pedido (
+                CREATE TABLE IF NOT EXISTS fato_itens_pedido (
                     id_registro INT AUTO_INCREMENT PRIMARY KEY,
                     id_pedido BIGINT NOT NULL,
                     id_produto VARCHAR(50) NOT NULL,
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,
                     taxa_venda DECIMAL(10,2) DEFAULT 0.00,
-                    FOREIGN KEY (id_pedido) REFERENCES tb_pedido(id_pedido),
-                    FOREIGN KEY (id_produto) REFERENCES tb_produto(id_produto),
+                    FOREIGN KEY (id_pedido) REFERENCES fato_pedido(id_pedido),
+                    FOREIGN KEY (id_produto) REFERENCES dim_produto(id_produto),
                     UNIQUE KEY unique_item (id_pedido, id_produto)
                 );
             """)
@@ -115,7 +115,7 @@ def criar_tabelas(engine: Engine) -> None:
         # Ads cost fact table with composite PK for upsert idempotency
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_custos_ads (
+                CREATE TABLE IF NOT EXISTS fato_custos_ads (
                     data_metrica DATE,
                     id_campanha VARCHAR(50),
                     nome_campanha VARCHAR(255),
@@ -129,7 +129,7 @@ def criar_tabelas(engine: Engine) -> None:
         )
         conn.execute(
             text("""
-                CREATE TABLE IF NOT EXISTS tb_custos_operacionais (
+                CREATE TABLE IF NOT EXISTS fato_custos_operacionais (
                     data_metrica DATE,
                     tipo_custo VARCHAR(100),
                     valor DECIMAL(10,2) DEFAULT 0.00,
@@ -146,10 +146,10 @@ def criar_tabelas(engine: Engine) -> None:
 # ---------------------------------------------------------------------------
 
 def salvar_no_banco(
-    df_clientes: pd.DataFrame,
-    df_produtos: pd.DataFrame,
-    df_pedidos: pd.DataFrame,
-    df_itens: pd.DataFrame,
+    df_dim_cliente: pd.DataFrame,
+    df_dim_produto: pd.DataFrame,
+    df_fato_pedido: pd.DataFrame,
+    df_fato_itens_pedido: pd.DataFrame,
 ) -> None:
     """Inserts transformed data into MySQL using staging tables
     and upsert logic (ON DUPLICATE KEY UPDATE).
@@ -159,10 +159,10 @@ def salvar_no_banco(
     everything, including the staging tables.
 
     Args:
-        df_clientes: Customer dimension.
-        df_produtos: Product dimension (with custo_unitario populated).
-        df_pedidos: Order fact header.
-        df_itens: Order item fact lines.
+        df_dim_cliente: Customer dimension.
+        df_dim_produto: Product dimension (with custo_unitario populated).
+        df_fato_pedido: Order fact header.
+        df_fato_itens_pedido: Order item fact lines.
     """
     engine = conectar_mysql()
     criar_tabelas(engine)
@@ -170,13 +170,13 @@ def salvar_no_banco(
     try:
         with engine.begin() as conn:
             # --- 1. UPSERT CLIENTES ---
-            if not df_clientes.empty:
-                df_clientes.to_sql(
+            if not df_dim_cliente.empty:
+                df_dim_cliente.to_sql(
                     "stg_clientes", con=conn, if_exists="replace", index=False
                 )
                 conn.execute(
                     text("""
-                        INSERT INTO tb_cliente (id_cliente, nickname, nome_completo)
+                        INSERT INTO dim_cliente (id_cliente, nickname, nome_completo)
                         SELECT id_cliente, nickname, nome_completo FROM stg_clientes
                         ON DUPLICATE KEY UPDATE
                             nickname = VALUES(nickname),
@@ -186,17 +186,17 @@ def salvar_no_banco(
                 conn.execute(text("DROP TABLE IF EXISTS stg_clientes;"))
                 logger.info(
                     "Upsert Clientes: %d registros processados.",
-                    len(df_clientes),
+                    len(df_dim_cliente),
                 )
 
             # --- 2. UPSERT PRODUTOS ---
-            if not df_produtos.empty:
-                df_produtos.to_sql(
+            if not df_dim_produto.empty:
+                df_dim_produto.to_sql(
                     "stg_produtos", con=conn, if_exists="replace", index=False
                 )
                 conn.execute(
                     text("""
-                        INSERT INTO tb_produto (id_produto, sku, descricao, custo_unitario)
+                        INSERT INTO dim_produto (id_produto, sku, descricao, custo_unitario)
                         SELECT id_produto, sku, descricao, custo_unitario FROM stg_produtos
                         ON DUPLICATE KEY UPDATE
                             sku = VALUES(sku),
@@ -206,17 +206,17 @@ def salvar_no_banco(
                 conn.execute(text("DROP TABLE IF EXISTS stg_produtos;"))
                 logger.info(
                     "Upsert Produtos: %d registros processados.",
-                    len(df_produtos),
+                    len(df_dim_produto),
                 )
 
             # --- 3. UPSERT PEDIDOS ---
-            if not df_pedidos.empty:
-                df_pedidos.to_sql(
+            if not df_fato_pedido.empty:
+                df_fato_pedido.to_sql(
                     "stg_pedidos", con=conn, if_exists="replace", index=False
                 )
                 conn.execute(
                     text("""
-                        INSERT INTO tb_pedido (id_pedido, id_cliente, data_criacao,
+                        INSERT INTO fato_pedido (id_pedido, id_cliente, data_criacao,
                                                status, valor_produtos, custo_frete,
                                                total_pago_comprador)
                         SELECT id_pedido, id_cliente, data_criacao, status,
@@ -231,27 +231,27 @@ def salvar_no_banco(
                 conn.execute(text("DROP TABLE IF EXISTS stg_pedidos;"))
                 logger.info(
                     "Upsert Pedidos: %d registros processados.",
-                    len(df_pedidos),
+                    len(df_fato_pedido),
                 )
 
             # --- 4. INSERT ITENS (IGNORE duplicados) ---
-            if not df_itens.empty:
-                df_itens.to_sql(
+            if not df_fato_itens_pedido.empty:
+                df_fato_itens_pedido.to_sql(
                     "stg_itens", con=conn, if_exists="replace", index=False
                 )
                 conn.execute(
                     text("""
-                        INSERT IGNORE INTO tb_itens_pedido
+                        INSERT IGNORE INTO fato_itens_pedido
                             (id_pedido, id_produto, quantidade,
                              preco_unitario, taxa_venda)
-                        SELECT id_pedido, id_produto, quantidade,
-                               preco_unitario, taxa_venda
+                        SELECT id_pedido, id_produto, quantity,
+                               unit_price, sale_fee
                         FROM stg_itens;
                     """)
                 )
                 conn.execute(text("DROP TABLE IF EXISTS stg_itens;"))
                 logger.info(
-                    "Upsert Itens: %d registros processados.", len(df_itens)
+                    "Upsert Itens: %d registros processados.", len(df_fato_itens_pedido)
                 )
 
     except Exception as exc:
@@ -264,7 +264,7 @@ def salvar_no_banco(
 # ---------------------------------------------------------------------------
 
 def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
-    """Updates the ``custo_unitario`` column in ``tb_produto``
+    """Updates the ``custo_unitario`` column in ``dim_produto``
     using the pre-processed cost DataFrame.
 
     Receives a DataFrame (output of
@@ -293,7 +293,7 @@ def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
 
             resultado = conn.execute(
                 text("""
-                    UPDATE tb_produto p
+                    UPDATE dim_produto p
                     INNER JOIN stg_custos c ON p.sku = c.sku
                     SET p.custo_unitario = c.custo;
                 """)
@@ -331,7 +331,7 @@ def obter_ultima_data_pedido() -> Optional[str]:
     try:
         with engine.connect() as conn:
             resultado = conn.execute(
-                text("SELECT MAX(data_criacao) FROM tb_pedido")
+                text("SELECT MAX(data_criacao) FROM fato_pedido")
             ).scalar()
             if resultado:
                 return resultado.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
@@ -341,25 +341,25 @@ def obter_ultima_data_pedido() -> Optional[str]:
     return None
 
 
-def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
+def salvar_custos_operacionais(df_fato_custos_operacionais: pd.DataFrame) -> int:
     """Inserts/updates operational costs via staging table.
 
     Args:
-        df_op: DataFrame with columns: data_metrica, tipo_custo, valor.
+        df_fato_custos_operacionais: DataFrame with columns: data_metrica, tipo_custo, valor.
 
     Returns:
         Number of records processed.
     """
-    if df_op.empty:
+    if df_fato_custos_operacionais.empty:
         return 0
 
     engine = conectar_mysql()
 
     with engine.begin() as conn:
-        df_op.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
+        df_fato_custos_operacionais.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
 
         conn.execute(text("""
-            INSERT INTO tb_custos_operacionais (data_metrica, tipo_custo, valor)
+            INSERT INTO fato_custos_operacionais (data_metrica, tipo_custo, valor)
             SELECT data_metrica, tipo_custo, valor
             FROM stg_custos_op
             ON DUPLICATE KEY UPDATE
@@ -367,6 +367,6 @@ def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
         """))
         conn.execute(text("DROP TABLE IF EXISTS stg_custos_op;"))
 
-    registros = len(df_op)
+    registros = len(df_fato_custos_operacionais)
     logger.info("Custos operacionais atualizados: %d registros.", registros)
     return registros

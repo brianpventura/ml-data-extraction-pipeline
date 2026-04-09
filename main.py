@@ -207,19 +207,19 @@ def executar_pipeline() -> None:
         # TRANSFORM
         # ==============================================================
         logger.info("Etapa 4/8: Transformando dados (Star Schema)...")
-        df_clientes, df_produtos, df_pedidos, df_itens = processar_pedidos(
+        df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido = processar_pedidos(
             dados_brutos
         )
 
         if df_custos is not None and not df_custos.empty:
             logger.info("Enriquecendo produtos com custos da planilha...")
-            df_produtos = enriquecer_produtos_com_custos(df_produtos, df_custos)
+            df_dim_produto = enriquecer_produtos_com_custos(df_dim_produto, df_custos)
 
         # ==============================================================
         # LOAD
         # ==============================================================
         logger.info("Etapa 5/8: Inserindo dados no MySQL...")
-        salvar_no_banco(df_clientes, df_produtos, df_pedidos, df_itens)
+        salvar_no_banco(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)
 
         logger.info("Etapa 6/8: Atualizando custos no banco de dados...")
         if df_custos is not None and not df_custos.empty:

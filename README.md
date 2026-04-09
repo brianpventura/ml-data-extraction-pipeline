@@ -1,102 +1,150 @@
 # 📊 Mercado Livre ETL Pipeline
 
-![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54) ![MySQL](https://img.shields.io/badge/mysql-4479A1.svg?style=for-the-badge&logo=mysql&logoColor=white) ![Power Bi](https://img.shields.io/badge/power_bi-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)  
+![Python](https://img.shields.io/badge/python-3.10+-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54) ![MySQL](https://img.shields.io/badge/mysql-4479A1.svg?style=for-the-badge&logo=mysql&logoColor=white) ![Power Bi](https://img.shields.io/badge/power_bi-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)
 
-## 📌 Visão Geral
-Este projeto consiste em um pipeline de Engenharia de Dados (ETL) construído em Python. O objetivo principal é automatizar a extração de custos operacionais (Logística, Coleta, Devoluções e Ads) via API REST do Mercado Livre, tratar as informações e carregá-las em um banco de dados MySQL para posterior consumo em dashboards no Power BI.
+## 📌 Overview
 
-Este projeto demonstra conhecimentos práticos em consumo de APIs, tratamento de dados, resiliência de código e integração com bancos de dados relacionais.
+End-to-end **ETL pipeline** built in Python that extracts operational data from the Mercado Livre REST API (Orders, Advertising Costs, Billing / Operational Costs), transforms it into a Star Schema, and loads it into a MySQL database for consumption in Power BI dashboards.
 
-## ⚙️ Arquitetura e Fluxo de Dados
-O pipeline segue a estrutura clássica de ETL (Extract, Transform, Load):
+### Key Features
 
-1. **Extract (Extração):**
-   - Autenticação e gestão de tokens via API do Mercado Livre.
-   - Consulta aos endpoints de faturamento.
-   - **Tratamento de Exceções:** Implementação de *fallback* (gerador manual de datas) para garantir a coleta mesmo quando a API retorna instabilidades (`HTTP 422`) na listagem oficial de períodos.
-2. **Transform (Transformação):**
-   - Limpeza e padronização com Pandas.
-   - Agregação de custos operacionais por categoria (ex: `COLETA_FULL`, `DEVOLUCAO`, `PADS`).
-3. **Load (Carga):**
-   - Inserção dos dados consolidados no MySQL para armazenamento histórico seguro.
-4. **Data Viz:**
-   - Conexão do Power BI ao MySQL para visualização dinâmica dos indicadores financeiros.
+- **OAuth 2.0 authentication** with automatic token refresh and persistence.
+- **Paginated extraction** with dynamic `date_to` pivot to bypass the API's 10k offset limit.
+- **Shipping cost enrichment** via the Shipments API (multi-source comparison).
+- **Cost integration** from Excel and JSON local sources via SKU-based joins.
+- **Advertising metrics** extraction with per-campaign daily granularity.
+- **Operational costs** (Fulfillment storage, inbound, returns, affiliates) from the Billing API.
+- **Idempotent upserts** via staging tables — safe to re-run without duplicates.
+- **Centralized configuration** — all secrets in `.env`, all constants in `settings.py`.
 
+---
 
-## 📂 Estrutura do Projeto
+## ⚙️ Architecture
 
-```text
-/
-├── dashboard/               # Arquivos .pbix do Power BI
-├── src/                     # Código-fonte principal
-│   ├── config/              # Configurações globais e de ambiente
-│   ├── extract/             # Scripts de requisição à API (mercadolivre_client.py)
-│   ├── transform/           # Regras de negócio e processamento de dados
-│   └── load/                # Conexões e queries de inserção no banco de dados (database.py)
-├── .env.example             # Template das variáveis de ambiente necessárias
-├── requirements.txt         # Dependências do projeto
-└── main.py                  # Orquestrador do pipeline
+The pipeline follows the classic **ETL** pattern with a Star Schema data model:
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌───────────┐
+│   EXTRACT   │ ──▸ │  TRANSFORM   │ ──▸ │    LOAD     │ ──▸ │  DATA VIZ │
+│             │     │              │     │             │     │           │
+│ • Orders    │     │ • Star Schema│     │ • MySQL     │     │ • Power BI│
+│ • Costs     │     │ • SKU Merge  │     │ • Upsert    │     │           │
+│ • Ads       │     │ • Aggregation│     │ • Staging   │     │           │
+│ • Billing   │     │              │     │             │     │           │
+└─────────────┘     └──────────────┘     └─────────────┘     └───────────┘
 ```
 
 ---
 
-# 🚀 Como Executar o Projeto
+## 📂 Project Structure
 
-## 📋 Pré-requisitos
-
-- **Python 3.8+**
-- **Servidor MySQL** local ou em nuvem
-- **Conta de desenvolvedor no Mercado Livre**
-
-Você precisará de:
-
-- `Client ID`
-- `Client Secret`
+```text
+/
+├── main.py                          # Pipeline orchestrator (entry point)
+├── src/
+│   ├── config/
+│   │   └── settings.py              # Centralized configuration & constants
+│   ├── extract/
+│   │   ├── marketplace_client.py    # OAuth + Orders + Shipping API client
+│   │   └── local_data.py            # Excel / JSON cost file readers
+│   ├── transform/
+│   │   └── data_processor.py        # Star Schema + cost enrichment
+│   ├── load/
+│   │   └── database.py              # MySQL DDL, upserts, staging tables
+│   └── jobs/
+│       ├── run_ads_update.py        # Advertising metrics extraction job
+│       └── run_costs_update.py      # Operational costs extraction job
+├── scripts/
+│   └── batch_cost_update.py         # Standalone batch cost update utility
+├── tests/                           # Unit tests (pytest)
+├── material/                        # Local data files (not tracked)
+├── dashboard/                       # Power BI files (not tracked)
+├── .env.example                     # Environment variables template
+├── .gitignore
+└── requirements.txt
+```
 
 ---
 
-# ⚡ Passo a Passo
+## 🚀 Getting Started
 
-## 1️⃣ Clone o repositório
+### Prerequisites
+
+- **Python 3.10+**
+- **MySQL Server** (local or cloud)
+- **Mercado Livre Developer Account** ([developers.mercadolivre.com.br](https://developers.mercadolivre.com.br))
+  - You will need: `Client ID`, `Client Secret`, `Redirect URI` and an `Authorization Code`.
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/brianpventura/ml-data-extraction-pipeline.git
 cd ml-data-extraction-pipeline
 ```
 
-## 2️⃣ Crie e ative um ambiente virtual
-# Linux / Mac
+### 2. Create and activate a virtual environment
+
 ```bash
+# Linux / macOS
 python -m venv .venv
 source .venv/bin/activate
-```
 
 # Windows
-```bash
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
-## 3️⃣ Instale as dependências
+### 3. Install dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-## 4️⃣ Configure as variáveis de ambiente
-# Crie um arquivo .env na raiz do projeto
+### 4. Configure environment variables
+
 ```bash
 cp .env.example .env
+# Edit .env with your actual credentials
 ```
 
-## 5️⃣ Execute o pipeline
+### 5. Run the pipeline
+
 ```bash
 python main.py
 ```
 
-## 👨‍💻 Autor
+The CLI will prompt you to choose an extraction mode:
+- **Incremental** — fetches orders since the last saved date.
+- **Retroactive** — specify number of days to look back.
+- **Date range** — explicit start and end dates (`YYYY-MM-DD,YYYY-MM-DD`).
 
-Brian Pereira Ventura
-Analista de Dados / Desenvolvedor
+---
+
+## 🧱 Database Schema (Star Schema)
+
+| Table | Type | Description |
+|---|---|---|
+| `tb_cliente` | Dimension | Customer data (ID, nickname) |
+| `tb_produto` | Dimension | Product catalog (SKU, description, unit cost) |
+| `tb_pedido` | Fact | Order headers (date, totals, shipping cost) |
+| `tb_itens_pedido` | Fact | Order line items (quantity, unit price) |
+| `tb_custos_ads` | Fact | Daily advertising metrics per campaign |
+| `tb_custos_operacionais` | Fact | Monthly operational costs (storage, fulfillment, returns) |
+
+---
+
+## 🔐 Security
+
+- All credentials are loaded from `.env` (never hardcoded).
+- `tokens.json` and `.env` are excluded from version control via `.gitignore`.
+- `.env.example` is provided as a safe template with no real values.
+
+---
+
+## 👨‍💻 Author
+
+**Brian Pereira Ventura**
+Data Analyst / Developer
 
 🔗 [LinkedIn](https://br.linkedin.com/in/brian-ventura-68081a25a)
 🐙 [GitHub](https://github.com/brianpventura)

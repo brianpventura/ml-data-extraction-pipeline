@@ -1,5 +1,6 @@
 # --- Sensitive / runtime files (surgical) ---
-/tokens.json
+/tokens_prohair.json
+/tokens_progrowth.json
 
 # --- Local data (not tracked) ---
 /material/
@@ -114,6 +115,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.prohair
+.env.progrowth
 .venv
 .venv/
 env/

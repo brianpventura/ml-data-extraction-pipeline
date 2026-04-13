@@ -13,6 +13,7 @@ import datetime
 import logging
 import os
 import sys
+import pandas as pd
 from typing import Optional
 
 # ---------------------------------------------------------------------------

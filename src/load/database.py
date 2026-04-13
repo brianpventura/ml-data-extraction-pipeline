@@ -49,12 +49,12 @@ def criar_tabelas(engine: Engine) -> None:
     """Creates the Star Schema tables if they do not already exist.
 
     Tables created:
-        - ``tb_cliente`` (Dimension)
-        - ``tb_produto`` (Dimension)
-        - ``tb_pedido`` (Fact — header)
-        - ``tb_itens_pedido`` (Fact — line item)
-        - ``tb_custos_ads`` (Fact — daily advertising costs)
-        - ``tb_custos_operacionais`` (Fact — operational costs)
+        - ``dim_cliente`` (Dimension)
+        - ``dim_produto`` (Dimension)
+        - ``fato_pedido`` (Fact — header)
+        - ``fato_itens_pedido`` (Fact — line item)
+        - ``fato_custos_ads`` (Fact — daily advertising costs)
+        - ``fato_custos_operacionais`` (Fact — operational costs)
 
     Args:
         engine: SQLAlchemy Engine connected to MySQL.
@@ -264,7 +264,7 @@ def salvar_no_banco(
 # ---------------------------------------------------------------------------
 
 def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
-    """Updates the ``custo_unitario`` column in ``tb_produto``
+    """Updates the ``custo_unitario`` column in ``dim_produto``
     using the pre-processed cost DataFrame.
 
     Receives a DataFrame (output of
@@ -331,7 +331,7 @@ def obter_ultima_data_pedido() -> Optional[str]:
     try:
         with engine.connect() as conn:
             resultado = conn.execute(
-                text("SELECT MAX(data_criacao) FROM tb_pedido")
+                text("SELECT MAX(data_criacao) FROM fato_pedido")
             ).scalar()
             if resultado:
                 return resultado.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
@@ -359,7 +359,7 @@ def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
         df_op.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
 
         conn.execute(text("""
-            INSERT INTO tb_custos_operacionais (data_metrica, tipo_custo, valor)
+            INSERT INTO fato_custos_operacionais (data_metrica, tipo_custo, valor)
             SELECT data_metrica, tipo_custo, valor
             FROM stg_custos_op
             ON DUPLICATE KEY UPDATE

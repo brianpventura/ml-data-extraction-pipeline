@@ -269,7 +269,7 @@ def atualizar_modulo_ads(
     data_inicio_str: Optional[str] = None,
     data_fim_str: Optional[str] = None,
 ) -> None:
-    """Extracts daily Ads costs and saves to the tb_custos_ads table.
+    """Extracts daily Ads costs and saves to the fato_custos_ads table.
 
     Workflow:
       1. Obtains token via MercadoLivreClient
@@ -378,7 +378,7 @@ def atualizar_modulo_ads(
             with eng.begin() as conn:
                 df.to_sql("stg_ads", con=conn, if_exists="replace", index=False)
                 conn.execute(text("""
-                    INSERT INTO tb_custos_ads
+                    INSERT INTO fato_custos_ads
                         (data_metrica, id_campanha, nome_campanha,
                          impressoes, cliques, custo, receita)
                     SELECT data_metrica, id_campanha, nome_campanha,

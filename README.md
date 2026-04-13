@@ -124,12 +124,12 @@ The CLI will prompt you to choose an extraction mode:
 
 | Table | Type | Description |
 |---|---|---|
-| `tb_cliente` | Dimension | Customer data (ID, nickname) |
-| `tb_produto` | Dimension | Product catalog (SKU, description, unit cost) |
-| `tb_pedido` | Fact | Order headers (date, totals, shipping cost) |
-| `tb_itens_pedido` | Fact | Order line items (quantity, unit price) |
-| `tb_custos_ads` | Fact | Daily advertising metrics per campaign |
-| `tb_custos_operacionais` | Fact | Monthly operational costs (storage, fulfillment, returns) |
+| `dim_cliente` | Dimension | Customer data (ID, nickname) |
+| `dim_produto` | Dimension | Product catalog (SKU, description, unit cost) |
+| `fato_pedido` | Fact | Order headers (date, totals, shipping cost) |
+| `fato_itens_pedido` | Fact | Order line items (quantity, unit price) |
+| `fato_custos_ads` | Fact | Daily advertising metrics per campaign |
+| `fato_custos_operacionais` | Fact | Monthly operational costs (storage, fulfillment, returns) |
 
 ---
 

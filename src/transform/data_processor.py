@@ -139,7 +139,7 @@ def processar_pedidos(
 # ---------------------------------------------------------------------------
 
 def enriquecer_produtos_com_custos(
-    df_produtos: pd.DataFrame,
+    df_dim_produto: pd.DataFrame,
     df_custos: pd.DataFrame,
 ) -> pd.DataFrame:
     """Joins the product dimension with the cost DataFrame by SKU,
@@ -149,27 +149,27 @@ def enriquecer_produtos_com_custos(
     cost, without losing products that have no match.
 
     Args:
-        df_produtos: Product DataFrame (output of ``processar_pedidos``).
+        df_dim_produto: Product DataFrame (output of ``processar_pedidos``).
         df_custos: Cost DataFrame (output of ``carregar_planilha_custos``).
 
     Returns:
         Product DataFrame with ``custo_unitario`` populated where
         a SKU match was found.
     """
-    if df_produtos.empty:
+    if df_dim_produto.empty:
         logger.warning("DataFrame de produtos está vazio. Merge ignorado.")
-        return df_produtos
+        return df_dim_produto
 
     if df_custos.empty:
         logger.warning("DataFrame de custos está vazio. Merge ignorado.")
-        return df_produtos
+        return df_dim_produto
 
     # Work on a copy to avoid mutating the caller's DataFrame
-    df_produtos = df_produtos.copy()
+    df_dim_produto = df_dim_produto.copy()
 
     # Normalize SKU in products to ensure match
-    df_produtos["sku_normalizado"] = (
-        df_produtos["sku"]
+    df_dim_produto["sku_normalizado"] = (
+        df_dim_produto["sku"]
         .astype(str)
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
@@ -182,7 +182,7 @@ def enriquecer_produtos_com_custos(
     )
 
     # Left join — preserves all products
-    df_merged = df_produtos.merge(
+    df_merged = df_dim_produto.merge(
         df_custos_merge,
         left_on="sku_normalizado",
         right_on="sku",

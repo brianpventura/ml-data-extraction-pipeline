@@ -91,7 +91,10 @@ def criar_tabelas(engine: Engine) -> None:
                     valor_produtos DECIMAL(10,2) NOT NULL,
                     custo_frete DECIMAL(10,2) DEFAULT 0.00,
                     total_pago_comprador DECIMAL(10,2) NOT NULL,
+<<<<<<< refactor/clean-architecture
                     origem_venda VARCHAR(100),
+=======
+>>>>>>> main
                     FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
@@ -106,7 +109,10 @@ def criar_tabelas(engine: Engine) -> None:
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,
                     taxa_venda DECIMAL(10,2) DEFAULT 0.00,
+<<<<<<< refactor/clean-architecture
                     origem_venda VARCHAR(100),
+=======
+>>>>>>> main
                     FOREIGN KEY (id_pedido) REFERENCES fato_pedido(id_pedido),
                     FOREIGN KEY (id_produto) REFERENCES dim_produto(id_produto),
                     UNIQUE KEY unique_item (id_pedido, id_produto)
@@ -344,22 +350,22 @@ def obter_ultima_data_pedido() -> Optional[str]:
     return None
 
 
-def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
+def salvar_custos_operacionais(df_fato_custos_operacionais: pd.DataFrame) -> int:
     """Inserts/updates operational costs via staging table.
 
     Args:
-        df_op: DataFrame with columns: data_metrica, tipo_custo, valor.
+        df_fato_custos_operacionais: DataFrame with columns: data_metrica, tipo_custo, valor.
 
     Returns:
         Number of records processed.
     """
-    if df_op.empty:
+    if df_fato_custos_operacionais.empty:
         return 0
 
     engine = conectar_mysql()
 
     with engine.begin() as conn:
-        df_op.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
+        df_fato_custos_operacionais.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
 
         conn.execute(text("""
             INSERT INTO fato_custos_operacionais (data_metrica, tipo_custo, valor)
@@ -370,6 +376,6 @@ def salvar_custos_operacionais(df_op: pd.DataFrame) -> int:
         """))
         conn.execute(text("DROP TABLE IF EXISTS stg_custos_op;"))
 
-    registros = len(df_op)
+    registros = len(df_fato_custos_operacionais)
     logger.info("Custos operacionais atualizados: %d registros.", registros)
     return registros

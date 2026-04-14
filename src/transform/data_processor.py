@@ -32,7 +32,7 @@ def processar_pedidos(
         dados_brutos: List of dictionaries from the marketplace API,
             already enriched with the ``custo_frete_real`` field.
 
-    Returns:
+        Returns:
         Tuple of 4 DataFrames:
         ``(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)``
     """
@@ -76,6 +76,7 @@ def processar_pedidos(
                 "valor_produtos": total_produtos,
                 "custo_frete": frete_final,
                 "total_pago_comprador": total_pago_comprador,
+                "origem_venda": "MERCADO_LIVRE",
             }
         )
 
@@ -100,6 +101,7 @@ def processar_pedidos(
                     "quantidade": item.get("quantity", 1),
                     "preco_unitario": item.get("unit_price", 0.0),
                     "taxa_venda": item.get("sale_fee", 0.0),
+                    "origem_venda": "MERCADO_LIVRE",
                 }
             )
 

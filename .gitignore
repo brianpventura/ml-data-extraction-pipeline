@@ -1,6 +1,8 @@
-# --- Sensitive / runtime files (surgical) ---
-/tokens_prohair.json
-/tokens_progrowth.json
+# --- Ambiente e Credenciais (Crítico) ---
+.env.prohair
+.env.progrowth
+tokens_meli_*.json
+tokens_shopee_*.json
 
 # --- Local data (not tracked) ---
 /material/
@@ -156,4 +158,13 @@ poetry.toml
 .ruff_cache/
 
 # LSP config files
+# LSP config files
 pyrightconfig.json
+
+# IDEs
+.vscode/
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db

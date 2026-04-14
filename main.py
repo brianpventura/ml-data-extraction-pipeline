@@ -188,7 +188,7 @@ def executar_pipeline(nome_loja: str) -> None:
         nome_loja: Sanitized store name (already validated).
     """
     # --- Lazy imports (settings already loaded by configurar_ambiente) ---
-    from src.extract.marketplace_client import MercadoLivreClient
+    from src.extract.meli_client import MercadoLivreClient
     from src.load.database import (
         atualizar_custos_no_banco,
         obter_ultima_data_pedido,

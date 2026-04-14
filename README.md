@@ -45,7 +45,7 @@ The pipeline follows the classic **ETL** pattern with a Star Schema data model:
 │   ├── config/
 │   │   └── settings.py              # Centralized configuration & constants
 │   ├── extract/
-│   │   ├── marketplace_client.py    # OAuth + Orders + Shipping API client
+│   │   ├── meli_client.py    # OAuth + Orders + Shipping API client
 │   │   └── local_data.py            # Excel / JSON cost file readers
 │   ├── transform/
 │   │   └── data_processor.py        # Star Schema + cost enrichment

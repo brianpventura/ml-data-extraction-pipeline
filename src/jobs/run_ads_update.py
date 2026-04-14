@@ -28,7 +28,7 @@ import pandas as pd
 import requests
 from sqlalchemy import text
 
-from src.extract.marketplace_client import MercadoLivreClient
+from src.extract.meli_client import MercadoLivreClient
 from src.load.database import conectar_mysql
 from src.config.settings import (
     ADS_BASE_URL,

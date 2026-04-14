@@ -1,4 +1,4 @@
-# 📊 Mercado Livre ETL Pipeline
+# 📊 Mercado Libre ETL Pipeline
 
 ![Python](https://img.shields.io/badge/python-3.10+-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54) ![MySQL](https://img.shields.io/badge/mysql-4479A1.svg?style=for-the-badge&logo=mysql&logoColor=white) ![Power Bi](https://img.shields.io/badge/power_bi-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)
 
@@ -143,7 +143,7 @@ The CLI will prompt you to choose an extraction mode:
 
 ## 👨‍💻 Author
 
-**Brian Pereira Ventura**
+### **Brian Pereira Ventura**
 Data Analyst / Developer
 
 🔗 [LinkedIn](https://br.linkedin.com/in/brian-ventura-68081a25a)

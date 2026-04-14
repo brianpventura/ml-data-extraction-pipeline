@@ -2,7 +2,7 @@
 run_costs_update — Operational Costs Extraction Job
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Extracts operational costs from the billing API (monthly invoices)
-and persists aggregated values into the operational costs fact table.
+and persists aggregated values into the fato_custos_operacionais fact table.
 
 Cost categories mapped:
   - STORAGE       → Fulfillment warehouse storage fees
@@ -330,23 +330,23 @@ def atualizar_modulo_operacional(
             print("   -> O pipeline continuará normalmente.\n")
             return
 
-        df_op = pd.DataFrame(dados_op)
+        df_fato_custos_operacionais = pd.DataFrame(dados_op)
 
         # Aggregate: SUM values by (data_metrica, tipo_custo)
-        df_op = (
-            df_op
+        df_fato_custos_operacionais = (
+            df_fato_custos_operacionais
             .groupby(["data_metrica", "tipo_custo"], as_index=False)
             .agg({"valor": "sum"})
         )
 
-        print(f"\n3. Salvando {len(df_op)} registros agregados no MySQL...")
-        salvos = salvar_custos_operacionais(df_op)
+        print(f"\n3. Salvando {len(df_fato_custos_operacionais)} registros agregados no MySQL...")
+        salvos = salvar_custos_operacionais(df_fato_custos_operacionais)
 
         if salvos > 0:
             print(f"✅ SUCESSO! {salvos} registros de custos operacionais salvos.\n")
 
             # Resumo por tipo
-            resumo = df_op.groupby("tipo_custo")["valor"].sum()
+            resumo = df_fato_custos_operacionais.groupby("tipo_custo")["valor"].sum()
             print("   📊 Resumo:")
             for tipo, total in resumo.items():
                 print(f"      {tipo}: R$ {total:,.2f}")

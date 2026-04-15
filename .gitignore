@@ -1,5 +1,4 @@
-# --- Sensitive / runtime files (surgical) ---
-/tokens.json
+# --- Ambiente e Credenciais (Critico) ---
 .env.prohair
 .env.progrowth
 tokens_meli_*.json
@@ -118,8 +117,6 @@ celerybeat.pid
 
 # Environments
 .env
-.env.prohair
-.env.progrowth
 .venv
 .venv/
 env/
@@ -158,7 +155,6 @@ poetry.toml
 # ruff
 .ruff_cache/
 
-# LSP config files
 # LSP config files
 pyrightconfig.json
 

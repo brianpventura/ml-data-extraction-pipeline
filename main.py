@@ -8,10 +8,8 @@ Coordinates the complete flow for a specific store (tenant):
     3. Load    → MySQL (Upsert + Cost update)
 """
 
-import argparse
 import datetime
 import logging
-import os
 import sys
 import pandas as pd
 from typing import Optional
@@ -32,66 +30,7 @@ logger = logging.getLogger(__name__)
 # Multi-tenant setup (must run BEFORE any src.* import)
 # ---------------------------------------------------------------------------
 
-def configurar_ambiente() -> str:
-    """Determines the target store and loads its environment file.
-
-    Resolution order:
-        1. ``--loja`` CLI argument (e.g. ``python main.py --loja prohair``)
-        2. Interactive ``input()`` prompt if no CLI argument was given.
-
-    After resolving the store name, locates the corresponding
-    ``.env.<store>`` file, validates its existence, and calls
-    ``settings.inicializar()`` to populate all module-level
-    configuration variables.
-
-    Returns:
-        Sanitized store name (e.g. 'prohair').
-    """
-    parser = argparse.ArgumentParser(
-        description="ETL Pipeline — Mercado Livre (Multi-Tenant)",
-    )
-    parser.add_argument(
-        "--loja",
-        type=str,
-        required=False,
-        default=None,
-        help="Nome da loja (ex: prohair, progrowth). "
-             "Se omitido, será solicitado interativamente.",
-    )
-    args = parser.parse_args()
-
-    # --- Resolve store name ---
-    if args.loja:
-        nome_loja = args.loja
-    else:
-        print("=====================================================")
-        print("  Extrator de Dados do Mercado Livre — Multi-Tenant  ")
-        print("=====================================================\n")
-        nome_loja = input("Digite o nome da loja (ex: prohair, progrowth): ")
-
-    # --- Sanitize ---
-    nome_loja = nome_loja.strip().lower()
-
-    if not nome_loja:
-        print("\n[ERRO] Nenhum nome de loja foi informado.")
-        sys.exit(1)
-
-    # --- Locate and validate .env file ---
-    env_file = f".env.{nome_loja}"
-
-    if not os.path.exists(env_file):
-        print(f"\n[ERRO] Arquivo '{env_file}' nao encontrado.")
-        print(f"   A loja '{nome_loja}' nao esta cadastrada.")
-        print(f"   Crie o arquivo '{env_file}' na raiz do projeto com as")
-        print("   credenciais da loja antes de executar o pipeline.")
-        sys.exit(1)
-
-    # --- Load environment and initialize settings ---
-    from src.config.settings import inicializar
-    inicializar(env_file)
-
-    logger.info("Ambiente configurado para a loja: '%s'", nome_loja)
-    return nome_loja
+from src.config.tenant import configurar_ambiente
 
 
 # ---------------------------------------------------------------------------

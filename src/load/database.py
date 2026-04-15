@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Connection (singleton — reuses the same connection pool)
 # ---------------------------------------------------------------------------
 _engine: Optional[Engine] = None
+_engine_db_name: Optional[str] = None
 
 
 def conectar_mysql() -> Engine:
@@ -30,15 +31,45 @@ def conectar_mysql() -> Engine:
     Uses the singleton pattern: the Engine (and its connection pool)
     is created only once and reused across all subsequent calls.
 
+    Includes a safety check: if the current tenant's ``DB_NAME``
+    differs from the Engine that was previously created, the old
+    Engine is disposed and a fresh one is built. This prevents
+    cross-tenant data leakage in multi-tenant scenarios.
+
     Returns:
         Engine configured with credentials from .env.
     """
-    global _engine
+    global _engine, _engine_db_name
+
+    # Safety: detect tenant switch mid-session
+    if _engine is not None and _engine_db_name != DB_NAME:
+        logger.warning(
+            "Tenant switch detected (%s -> %s). Rebuilding engine.",
+            _engine_db_name, DB_NAME,
+        )
+        resetar_engine()
+
     if _engine is None:
         url = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         _engine = create_engine(url, pool_pre_ping=True)
+        _engine_db_name = DB_NAME
         logger.debug("Engine MySQL criada: %s:%s/%s", DB_HOST, DB_PORT, DB_NAME)
     return _engine
+
+
+def resetar_engine() -> None:
+    """Disposes the current Engine and resets the singleton.
+
+    Call this when switching tenants within the same process
+    to ensure the next ``conectar_mysql()`` builds a fresh
+    connection pool targeting the new database.
+    """
+    global _engine, _engine_db_name
+    if _engine is not None:
+        _engine.dispose()
+        logger.debug("Engine MySQL descartada (tenant switch).")
+    _engine = None
+    _engine_db_name = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,10 +122,7 @@ def criar_tabelas(engine: Engine) -> None:
                     valor_produtos DECIMAL(10,2) NOT NULL,
                     custo_frete DECIMAL(10,2) DEFAULT 0.00,
                     total_pago_comprador DECIMAL(10,2) NOT NULL,
-<<<<<<< refactor/clean-architecture
                     origem_venda VARCHAR(100),
-=======
->>>>>>> main
                     FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
@@ -109,10 +137,7 @@ def criar_tabelas(engine: Engine) -> None:
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,
                     taxa_venda DECIMAL(10,2) DEFAULT 0.00,
-<<<<<<< refactor/clean-architecture
                     origem_venda VARCHAR(100),
-=======
->>>>>>> main
                     FOREIGN KEY (id_pedido) REFERENCES fato_pedido(id_pedido),
                     FOREIGN KEY (id_produto) REFERENCES dim_produto(id_produto),
                     UNIQUE KEY unique_item (id_pedido, id_produto)
@@ -364,18 +389,23 @@ def salvar_custos_operacionais(df_fato_custos_operacionais: pd.DataFrame) -> int
 
     engine = conectar_mysql()
 
-    with engine.begin() as conn:
-        df_fato_custos_operacionais.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
+    try:
+        with engine.begin() as conn:
+            df_fato_custos_operacionais.to_sql("stg_custos_op", con=conn, if_exists="replace", index=False)
 
-        conn.execute(text("""
-            INSERT INTO fato_custos_operacionais (data_metrica, tipo_custo, valor)
-            SELECT data_metrica, tipo_custo, valor
-            FROM stg_custos_op
-            ON DUPLICATE KEY UPDATE
-                valor = VALUES(valor);
-        """))
-        conn.execute(text("DROP TABLE IF EXISTS stg_custos_op;"))
+            conn.execute(text("""
+                INSERT INTO fato_custos_operacionais (data_metrica, tipo_custo, valor)
+                SELECT data_metrica, tipo_custo, valor
+                FROM stg_custos_op
+                ON DUPLICATE KEY UPDATE
+                    valor = VALUES(valor);
+            """))
+            conn.execute(text("DROP TABLE IF EXISTS stg_custos_op;"))
 
-    registros = len(df_fato_custos_operacionais)
-    logger.info("Custos operacionais atualizados: %d registros.", registros)
-    return registros
+        registros = len(df_fato_custos_operacionais)
+        logger.info("Custos operacionais atualizados: %d registros.", registros)
+        return registros
+
+    except Exception as exc:
+        logger.error("Erro ao salvar custos operacionais: %s", exc, exc_info=True)
+        raise

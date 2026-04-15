@@ -1,5 +1,9 @@
 # --- Sensitive / runtime files (surgical) ---
 /tokens.json
+.env.prohair
+.env.progrowth
+tokens_meli_*.json
+tokens_shopee_*.json
 
 # --- Local data (not tracked) ---
 /material/

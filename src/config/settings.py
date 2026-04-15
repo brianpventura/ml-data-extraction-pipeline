@@ -4,6 +4,10 @@ config.settings
 Centralizes all project configuration: .env loading, database
 credentials, marketplace API keys, and token persistence.
 
+Supports multi-tenant architecture: the environment file is loaded
+lazily via ``inicializar(env_file)`` so that the correct store
+credentials are in ``os.environ`` before any setting is read.
+
 No business logic should exist in this module.
 """
 
@@ -21,30 +25,64 @@ from dotenv import load_dotenv
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 """Absolute path to the project root directory."""
 
-_ENV_PATH: Path = PROJECT_ROOT / ".env"
-_TOKENS_PATH: Path = PROJECT_ROOT / "tokens.json"
+# Token path is resolved dynamically via _get_tokens_path()
 _CUSTOS_PATH: Path = PROJECT_ROOT / "material" / "custo.xlsx"
 _CUSTOS_JSON_PATH: Path = PROJECT_ROOT / "material" / "produtos_custo.json"
 
-# ---------------------------------------------------------------------------
-# Environment variables
-# ---------------------------------------------------------------------------
-load_dotenv(dotenv_path=_ENV_PATH)
-
 logger = logging.getLogger(__name__)
 
-# --- Marketplace API ---
-APP_ID: str = os.getenv("MELI_APP_ID", "")
-CLIENT_SECRET: str = os.getenv("MELI_CLIENT_SECRET", "")
-REDIRECT_URI: str = os.getenv("MELI_REDIRECT_URI", "")
-AUTHORIZATION_CODE: str = os.getenv("MELI_AUTH_CODE", "")
+# ---------------------------------------------------------------------------
+# Multi-tenant initializer
+# ---------------------------------------------------------------------------
+_inicializado: bool = False
 
-# --- Database ---
-DB_HOST: str = os.getenv("DB_HOST")
-DB_PORT: str = os.getenv("DB_PORT")
-DB_USER: str = os.getenv("DB_USER")
-DB_PASS: str = os.getenv("DB_PASS")
-DB_NAME: str = os.getenv("DB_NAME")
+
+def inicializar(env_file: str) -> None:
+    """Loads the tenant-specific .env file and populates module-level settings.
+
+    Must be called exactly once before any other module reads the
+    configuration constants (APP_ID, DB_HOST, etc.).
+
+    Args:
+        env_file: Absolute or relative path to the .env file
+                  (e.g. '.env.prohair').
+    """
+    global _inicializado
+    global APP_ID, CLIENT_SECRET, REDIRECT_URI, AUTHORIZATION_CODE
+    global DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
+
+    load_dotenv(dotenv_path=env_file, override=True)
+
+    # --- Marketplace API ---
+    APP_ID = os.getenv("MELI_APP_ID", "")
+    CLIENT_SECRET = os.getenv("MELI_CLIENT_SECRET", "")
+    REDIRECT_URI = os.getenv("MELI_REDIRECT_URI", "")
+    AUTHORIZATION_CODE = os.getenv("MELI_AUTH_CODE", "")
+
+    # --- Database ---
+    DB_HOST = os.getenv("DB_HOST", "")
+    DB_PORT = os.getenv("DB_PORT", "")
+    DB_USER = os.getenv("DB_USER", "")
+    DB_PASS = os.getenv("DB_PASS", "")
+    DB_NAME = os.getenv("DB_NAME", "")
+
+    _inicializado = True
+    logger.info("Settings initialized from: %s", env_file)
+
+
+# ---------------------------------------------------------------------------
+# Defaults (populated after inicializar() is called)
+# ---------------------------------------------------------------------------
+APP_ID: str = ""
+CLIENT_SECRET: str = ""
+REDIRECT_URI: str = ""
+AUTHORIZATION_CODE: str = ""
+
+DB_HOST: str = ""
+DB_PORT: str = ""
+DB_USER: str = ""
+DB_PASS: str = ""
+DB_NAME: str = ""
 
 # ---------------------------------------------------------------------------
 # API constants (centralized to avoid magic numbers in modules)
@@ -86,8 +124,20 @@ def get_caminho_json_custos() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Token management
+# Token management (per-tenant via _TOKENS_PATH)
 # ---------------------------------------------------------------------------
+
+def _get_tokens_path() -> Path:
+    """Returns the token file path configured in the current tenant's environment.
+    """
+    token_file = os.getenv('MELI_TOKEN_FILE_PATH')
+    
+    if not token_file:
+        raise ValueError("A variável 'MELI_TOKEN_FILE_PATH' não foi encontrada no ambiente carregado.")
+        
+    path = Path(token_file)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
 
 def carregar_tokens() -> Optional[dict]:
     """Reads persisted tokens from the local token file.
@@ -96,9 +146,10 @@ def carregar_tokens() -> Optional[dict]:
         Dictionary with access_token, refresh_token and user_id,
         or None if the file does not exist.
     """
-    if _TOKENS_PATH.exists():
+    path = _get_tokens_path()
+    if path.exists():
         try:
-            with open(_TOKENS_PATH, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to read token file: %s", exc)
@@ -113,15 +164,19 @@ def salvar_tokens(access_token: str, refresh_token: str, user_id: int) -> None:
         refresh_token: Token used for automatic renewal.
         user_id: Seller ID from the marketplace.
     """
+    path = _get_tokens_path()
     dados = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "user_id": user_id,
     }
     try:
-        with open(_TOKENS_PATH, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(dados, f)
-        logger.debug("Tokens persisted to %s", _TOKENS_PATH)
+        logger.debug("Tokens persisted to %s", path)
     except OSError as exc:
         logger.error("Failed to persist tokens: %s", exc)
         raise
+
+
+

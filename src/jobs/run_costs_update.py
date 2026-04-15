@@ -19,7 +19,7 @@ from typing import Any, Optional
 import pandas as pd
 import requests
 
-from src.extract.marketplace_client import MercadoLivreClient
+from src.extract.meli_client import MercadoLivreClient
 from src.load.database import salvar_custos_operacionais
 from src.config.settings import (
     BILLING_BASE_URL,

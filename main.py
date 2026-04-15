@@ -1,36 +1,23 @@
 """
-main — ETL Pipeline Orchestrator
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Coordinates the complete flow:
-    1. Extract  → Orders (Marketplace API) + Costs (Spreadsheet/JSON)
+main — Multi-Tenant ETL Pipeline Orchestrator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Coordinates the complete flow for a specific store (tenant):
+    0. Setup   → Select store, load its .env, initialize settings
+    1. Extract → Orders (Marketplace API) + Costs (Spreadsheet/JSON)
     2. Transform → Star Schema + Cost enrichment
-    3. Load     → MySQL (Upsert + Cost update)
+    3. Load    → MySQL (Upsert + Cost update)
 """
 
+import argparse
 import datetime
 import logging
+import os
 import sys
+import pandas as pd
 from typing import Optional
 
-import pandas as pd
-
-from src.config.settings import get_caminho_custos, get_caminho_json_custos
-from src.extract.local_data import carregar_planilha_custos, carregar_json_custos
-from src.extract.marketplace_client import MercadoLivreClient
-from src.load.database import (
-    atualizar_custos_no_banco,
-    obter_ultima_data_pedido,
-    salvar_no_banco,
-)
-from src.transform.data_processor import (
-    enriquecer_produtos_com_custos,
-    processar_pedidos,
-)
-from src.jobs.run_ads_update import atualizar_modulo_ads
-from src.jobs.run_costs_update import atualizar_modulo_operacional
-
 # ---------------------------------------------------------------------------
-# Logging
+# Logging (configured before anything else)
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +29,73 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Multi-tenant setup (must run BEFORE any src.* import)
+# ---------------------------------------------------------------------------
+
+def configurar_ambiente() -> str:
+    """Determines the target store and loads its environment file.
+
+    Resolution order:
+        1. ``--loja`` CLI argument (e.g. ``python main.py --loja prohair``)
+        2. Interactive ``input()`` prompt if no CLI argument was given.
+
+    After resolving the store name, locates the corresponding
+    ``.env.<store>`` file, validates its existence, and calls
+    ``settings.inicializar()`` to populate all module-level
+    configuration variables.
+
+    Returns:
+        Sanitized store name (e.g. 'prohair').
+    """
+    parser = argparse.ArgumentParser(
+        description="ETL Pipeline — Mercado Livre (Multi-Tenant)",
+    )
+    parser.add_argument(
+        "--loja",
+        type=str,
+        required=False,
+        default=None,
+        help="Nome da loja (ex: prohair, progrowth). "
+             "Se omitido, será solicitado interativamente.",
+    )
+    args = parser.parse_args()
+
+    # --- Resolve store name ---
+    if args.loja:
+        nome_loja = args.loja
+    else:
+        print("=====================================================")
+        print("  Extrator de Dados do Mercado Livre — Multi-Tenant  ")
+        print("=====================================================\n")
+        nome_loja = input("Digite o nome da loja (ex: prohair, progrowth): ")
+
+    # --- Sanitize ---
+    nome_loja = nome_loja.strip().lower()
+
+    if not nome_loja:
+        print("\n[ERRO] Nenhum nome de loja foi informado.")
+        sys.exit(1)
+
+    # --- Locate and validate .env file ---
+    env_file = f".env.{nome_loja}"
+
+    if not os.path.exists(env_file):
+        print(f"\n[ERRO] Arquivo '{env_file}' nao encontrado.")
+        print(f"   A loja '{nome_loja}' nao esta cadastrada.")
+        print(f"   Crie o arquivo '{env_file}' na raiz do projeto com as")
+        print("   credenciais da loja antes de executar o pipeline.")
+        sys.exit(1)
+
+    # --- Load environment and initialize settings ---
+    from src.config.settings import inicializar
+    inicializar(env_file)
+
+    logger.info("Ambiente configurado para a loja: '%s'", nome_loja)
+    return nome_loja
+
+
+# ---------------------------------------------------------------------------
+# Helpers (use lazy imports — settings already loaded when called)
 # ---------------------------------------------------------------------------
 
 def _calcular_data_retroativa(dias: int) -> str:
@@ -60,7 +113,7 @@ def _calcular_data_retroativa(dias: int) -> str:
     return data_passada.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
 
 
-def _carregar_custos_combinados() -> Optional[pd.DataFrame]:
+def _carregar_custos_combinados() -> Optional["pd.DataFrame"]:
     """Loads cost data from all available sources and consolidates by SKU.
 
     Reads both the Excel spreadsheet and JSON cost file, concatenates
@@ -70,6 +123,10 @@ def _carregar_custos_combinados() -> Optional[pd.DataFrame]:
         Consolidated DataFrame with 'sku' and 'custo' columns,
         or None if no cost source is available.
     """
+    import pandas as pd
+    from src.config.settings import get_caminho_custos, get_caminho_json_custos
+    from src.extract.local_data import carregar_planilha_custos, carregar_json_custos
+
     dfs: list[pd.DataFrame] = []
 
     try:
@@ -124,11 +181,27 @@ def _despachar_modulo(
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def executar_pipeline() -> None:
-    """Executes the complete ETL pipeline."""
+def executar_pipeline(nome_loja: str) -> None:
+    """Executes the complete ETL pipeline for the given store.
 
-    print("=====================================================")
-    print("  Extrator de Dados do Mercado Livre — Start Data   ")
+    Args:
+        nome_loja: Sanitized store name (already validated).
+    """
+    # --- Lazy imports (settings already loaded by configurar_ambiente) ---
+    from src.extract.meli_client import MercadoLivreClient
+    from src.load.database import (
+        atualizar_custos_no_banco,
+        obter_ultima_data_pedido,
+        salvar_no_banco,
+    )
+    from src.transform.data_processor import (
+        enriquecer_produtos_com_custos,
+        processar_pedidos,
+    )
+    from src.jobs.run_ads_update import atualizar_modulo_ads
+    from src.jobs.run_costs_update import atualizar_modulo_operacional
+
+    print(f"\n  [Loja ativa] {nome_loja.upper()}")
     print("=====================================================\n")
 
     # --- Period selection interface ---
@@ -197,7 +270,7 @@ def executar_pipeline() -> None:
             logger.info("Executando módulo de Custos Operacionais (standalone)...")
             _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
-            print("\n🚀 Pipeline finalizado com sucesso (Modo Standalone)! Dados prontos para o Power BI.")
+            print(f"\n>>> Pipeline finalizado com sucesso (Modo Standalone)! Loja: {nome_loja.upper()}")
             return
 
         logger.info("Etapa 3/8: Extraindo fontes de custos...")
@@ -232,7 +305,7 @@ def executar_pipeline() -> None:
         logger.info("Etapa 8/8: Extraindo Custos Operacionais (Full e Devoluções)...")
         _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
-        print("\n🚀 Pipeline finalizado com sucesso! Dados prontos para o Power BI.")
+        print(f"\n>>> Pipeline finalizado com sucesso! Loja: {nome_loja.upper()} -- Dados prontos para o Power BI.")
 
     except Exception as exc:
         logger.critical("Erro crítico durante a execução: %s", exc, exc_info=True)
@@ -244,4 +317,5 @@ def executar_pipeline() -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    executar_pipeline()
+    loja = configurar_ambiente()
+    executar_pipeline(loja)

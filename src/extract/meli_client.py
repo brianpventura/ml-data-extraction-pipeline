@@ -1,5 +1,5 @@
 """
-extract.marketplace_client
+extract.meli_client
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 HTTP client for the marketplace REST API.
 Handles authentication (OAuth 2.0), paginated order retrieval,

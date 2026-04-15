@@ -118,6 +118,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.prohair
+.env.progrowth
 .venv
 .venv/
 env/
@@ -157,4 +159,13 @@ poetry.toml
 .ruff_cache/
 
 # LSP config files
+# LSP config files
 pyrightconfig.json
+
+# IDEs
+.vscode/
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db

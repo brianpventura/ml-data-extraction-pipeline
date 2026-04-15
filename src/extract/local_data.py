@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.config.utils import normalizar_sku
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,12 +59,7 @@ def carregar_planilha_custos(caminho: Path) -> pd.DataFrame:
         )
 
     # Clean SKU — remove residual .0 suffix from Excel and whitespace
-    df["sku"] = (
-        df["sku"]
-        .astype(str)
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-    )
+    df["sku"] = normalizar_sku(df["sku"])
 
     # Convert cost to float (accepts comma as decimal separator)
     df["custo"] = (
@@ -99,7 +96,7 @@ def carregar_json_custos(caminho: Path) -> pd.DataFrame:
     # Standardize column name to match pipeline convention
     df = df.rename(columns={"preco_custo": "custo"})
 
-    df["sku"] = df["sku"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    df["sku"] = normalizar_sku(df["sku"])
     df["custo"] = pd.to_numeric(df["custo"], errors="coerce")
 
     df = df.dropna(subset=["sku", "custo"])

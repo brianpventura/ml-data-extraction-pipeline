@@ -15,6 +15,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.config.utils import normalizar_sku
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,12 +170,7 @@ def enriquecer_produtos_com_custos(
     df_dim_produto = df_dim_produto.copy()
 
     # Normalize SKU in products to ensure match
-    df_dim_produto["sku_normalizado"] = (
-        df_dim_produto["sku"]
-        .astype(str)
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-    )
+    df_dim_produto["sku_normalizado"] = normalizar_sku(df_dim_produto["sku"])
 
     # Prepare cost DataFrame for the merge
     df_custos_merge = df_custos[["sku", "custo"]].copy()

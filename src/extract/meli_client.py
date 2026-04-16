@@ -153,7 +153,7 @@ class MercadoLivreClient:
             total=total_esperado,
             desc="Extracting Orders",
             unit="ped",
-            colour="green",
+            colour="yellow",
         )
 
         try:

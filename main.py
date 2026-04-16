@@ -136,6 +136,7 @@ def executar_pipeline(nome_loja: str) -> None:
     from src.transform.data_processor import (
         enriquecer_produtos_com_custos,
         processar_pedidos,
+        processar_pedidos_shopee,
     )
     from src.jobs.run_ads_update import atualizar_modulo_ads
     from src.jobs.run_costs_update import atualizar_modulo_operacional
@@ -181,21 +182,21 @@ def executar_pipeline(nome_loja: str) -> None:
 
     try:
         # ==============================================================
-        # EXTRACT
+        # EXTRACT — Mercado Livre
         # ==============================================================
-        logger.info("Etapa 1/8: Obtendo token de acesso...")
+        logger.info("Etapa 1/9: Obtendo token de acesso (Mercado Livre)...")
         cliente_ml = MercadoLivreClient()
         cliente_ml.obter_token_acesso()
-        logger.info("Token validado!")
+        logger.info("Token ML validado!")
 
-        logger.info("Etapa 2/8: Extraindo pedidos da API...")
+        logger.info("Etapa 2/9: Extraindo pedidos do Mercado Livre...")
         dados_brutos = cliente_ml.buscar_todos_pedidos(
             date_from=data_inicio, date_to=data_fim
         )
 
         if not dados_brutos:
             logger.info(
-                "Nenhum pedido novo encontrado. Banco já está atualizado!"
+                "Nenhum pedido novo encontrado no ML. Banco já está atualizado!"
             )
             # Even without new orders, update costs if the spreadsheet changed
             df_custos = _carregar_custos_combinados()
@@ -212,36 +213,67 @@ def executar_pipeline(nome_loja: str) -> None:
             print(f"\n>>> Pipeline finalizado com sucesso (Modo Standalone)! Loja: {nome_loja.upper()}")
             return
 
-        logger.info("Etapa 3/8: Extraindo fontes de custos...")
+        logger.info("Etapa 3/9: Extraindo fontes de custos...")
         df_custos = _carregar_custos_combinados()
 
         # ==============================================================
-        # TRANSFORM
+        # TRANSFORM + LOAD — Mercado Livre
         # ==============================================================
-        logger.info("Etapa 4/8: Transformando dados (Star Schema)...")
+        logger.info("Etapa 4/9: Transformando dados ML (Star Schema)...")
         df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido = processar_pedidos(
             dados_brutos
         )
 
         if df_custos is not None and not df_custos.empty:
-            logger.info("Enriquecendo produtos com custos da planilha...")
+            logger.info("Enriquecendo produtos ML com custos da planilha...")
             df_dim_produto = enriquecer_produtos_com_custos(df_dim_produto, df_custos)
 
-        # ==============================================================
-        # LOAD
-        # ==============================================================
-        logger.info("Etapa 5/8: Inserindo dados no MySQL...")
+        logger.info("Etapa 5/9: Inserindo dados ML no MySQL...")
         salvar_no_banco(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)
 
-        logger.info("Etapa 6/8: Atualizando custos no banco de dados...")
+        # ==============================================================
+        # EXTRACT + TRANSFORM + LOAD — Shopee (condicional)
+        # ==============================================================
+        logger.info("Etapa 6/9: Verificando integração Shopee...")
+        try:
+            from src.extract.shopee_client import ShopeeClient
+
+            cliente_shopee = ShopeeClient()
+            cliente_shopee.obter_token_acesso()
+            logger.info("Token Shopee validado! Extraindo pedidos...")
+
+            dados_shopee = cliente_shopee.buscar_todos_pedidos(
+                date_from=data_inicio, date_to=data_fim
+            )
+
+            if dados_shopee:
+                logger.info("Transformando %d pedidos Shopee...", len(dados_shopee))
+                df_cli_sp, df_prod_sp, df_ped_sp, df_itens_sp = processar_pedidos_shopee(
+                    dados_shopee
+                )
+
+                if df_custos is not None and not df_custos.empty:
+                    df_prod_sp = enriquecer_produtos_com_custos(df_prod_sp, df_custos)
+
+                logger.info("Inserindo dados Shopee no MySQL...")
+                salvar_no_banco(df_cli_sp, df_prod_sp, df_ped_sp, df_itens_sp)
+            else:
+                logger.info("Nenhum pedido Shopee encontrado no periodo.")
+
+        except (ValueError, FileNotFoundError) as exc:
+            logger.info(
+                "Shopee nao configurada para esta loja (pulando): %s", exc
+            )
+
+        logger.info("Etapa 7/9: Atualizando custos no banco de dados...")
         if df_custos is not None and not df_custos.empty:
             atualizados = atualizar_custos_no_banco(df_custos)
             logger.info("%d produto(s) com custo atualizado.", atualizados)
 
-        logger.info("Etapa 7/8: Extraindo custos do Mercado Ads...")
+        logger.info("Etapa 8/9: Extraindo custos do Mercado Ads...")
         _despachar_modulo(atualizar_modulo_ads, dt_inicio_str, dt_fim_str, dias, escolha)
 
-        logger.info("Etapa 8/8: Extraindo Custos Operacionais (Full e Devoluções)...")
+        logger.info("Etapa 9/9: Extraindo Custos Operacionais (Full e Devoluções)...")
         _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
         print(f"\n>>> Pipeline finalizado com sucesso! Loja: {nome_loja.upper()} -- Dados prontos para o Power BI.")

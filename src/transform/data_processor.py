@@ -11,6 +11,7 @@ No API access or database operations belong here.
 """
 
 import logging
+import datetime
 from typing import Any
 
 import pandas as pd
@@ -209,8 +210,151 @@ def enriquecer_produtos_com_custos(
 
 
 # ---------------------------------------------------------------------------
+# Shopee transformation — Star Schema
+# ---------------------------------------------------------------------------
+
+def processar_pedidos_shopee(
+    dados_brutos: list[dict[str, Any]],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Transforms raw Shopee API orders into 4 DataFrames following
+    the same Star Schema model used for the Mercado Livre pipeline.
+
+    Mapping:
+        - ``order_sn`` → ``id_pedido`` (VARCHAR — alphanumeric)
+        - ``buyer_user_id`` → ``id_cliente``
+        - ``buyer_username`` → ``nickname``
+        - ``create_time`` (Unix) → ``data_criacao`` (``%Y-%m-%d %H:%M:%S``)
+        - ``item_list[].item_id`` → ``id_produto``
+        - ``item_list[].item_sku`` → ``sku``
+        - ``item_list[].model_quantity_purchased`` → ``quantidade``
+        - ``item_list[].model_discounted_price`` → ``preco_unitario``
+        - ``valor_produtos`` = sum(quantidade × preço) from ``item_list``
+        - ``escrow_amount`` → ``total_pago_comprador``
+        - ``origem_venda`` = ``'SHOPEE'``
+
+    Args:
+        dados_brutos: List of order dictionaries returned by
+            ``ShopeeClient.buscar_todos_pedidos()``.
+
+    Returns:
+        Tuple of 4 DataFrames:
+        ``(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)``
+    """
+    clientes: list[dict] = []
+    produtos: list[dict] = []
+    pedidos: list[dict] = []
+    itens_pedido: list[dict] = []
+
+    for pedido in dados_brutos:
+        order_sn = str(pedido.get("order_sn", ""))
+        id_cliente = pedido.get("buyer_user_id", 0)
+        nickname = pedido.get("buyer_username", "")
+        status = pedido.get("order_status", "")
+        escrow_amount = float(pedido.get("escrow_amount", 0.0))
+
+        # Convert Unix timestamp to datetime string
+        create_time_unix = pedido.get("create_time", 0)
+        data_criacao = _unix_para_datetime(create_time_unix)
+
+        # --- 1. Customer (Dimension) ---
+        clientes.append({
+            "id_cliente": id_cliente,
+            "nickname": nickname,
+            "nome_completo": "",
+        })
+
+        # --- 2. Items and Products ---
+        item_list = pedido.get("item_list", [])
+        valor_produtos = 0.0
+
+        for item in item_list:
+            item_id = str(item.get("item_id", ""))
+            item_sku = item.get("item_sku", "")
+            item_name = item.get("item_name", "")
+            quantidade = int(item.get("model_quantity_purchased", 1))
+            preco_unitario = float(item.get("model_discounted_price", 0.0))
+
+            valor_produtos += quantidade * preco_unitario
+
+            produtos.append({
+                "id_produto": item_id,
+                "sku": item_sku,
+                "descricao": item_name,
+                "custo_unitario": 0.00,
+            })
+
+            itens_pedido.append({
+                "id_pedido": order_sn,
+                "id_produto": item_id,
+                "quantidade": quantidade,
+                "preco_unitario": preco_unitario,
+                "taxa_venda": 0.0,
+                "origem_venda": "SHOPEE",
+            })
+
+        # --- 3. Order (Fact Header) ---
+        pedidos.append({
+            "id_pedido": order_sn,
+            "id_cliente": id_cliente,
+            "data_criacao": data_criacao,
+            "status": status,
+            "valor_produtos": valor_produtos,
+            "custo_frete": 0.0,
+            "total_pago_comprador": escrow_amount,
+            "origem_venda": "SHOPEE",
+        })
+
+    # Convert to DataFrames
+    df_dim_cliente = pd.DataFrame(clientes)
+    df_dim_produto = pd.DataFrame(produtos)
+    df_fato_pedido = pd.DataFrame(pedidos)
+    df_fato_itens_pedido = pd.DataFrame(itens_pedido)
+
+    # Deduplicate dimensions
+    if not df_dim_cliente.empty:
+        df_dim_cliente = df_dim_cliente.drop_duplicates(
+            subset=["id_cliente"], keep="last"
+        )
+
+    if not df_dim_produto.empty:
+        df_dim_produto = df_dim_produto.drop_duplicates(
+            subset=["id_produto"], keep="last"
+        )
+
+    logger.info(
+        "Processamento Shopee concluido — Clientes: %d | Produtos: %d | "
+        "Pedidos: %d | Itens: %d",
+        len(df_dim_cliente),
+        len(df_dim_produto),
+        len(df_fato_pedido),
+        len(df_fato_itens_pedido),
+    )
+
+    return df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido
+
+
+# ---------------------------------------------------------------------------
 # Private helper functions
 # ---------------------------------------------------------------------------
+
+def _unix_para_datetime(ts: int) -> str:
+    """Converts a Unix timestamp to a formatted datetime string.
+
+    Args:
+        ts: Unix timestamp (seconds since epoch).
+
+    Returns:
+        Date string in ``%Y-%m-%d %H:%M:%S`` format, or empty string
+        if the timestamp is zero/invalid.
+    """
+    if not ts:
+        return ""
+    try:
+        return datetime.datetime.fromtimestamp(
+            ts, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError):
+        return ""
 
 def _extrair_frete_financeiro(pedido: dict[str, Any]) -> float:
     """Extracts shipping cost embedded in the order's financial fees.

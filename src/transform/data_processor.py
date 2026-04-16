@@ -80,6 +80,9 @@ def processar_pedidos(
                 "custo_frete": frete_final,
                 "total_pago_comprador": total_pago_comprador,
                 "origem_venda": "MERCADO_LIVRE",
+                "taxa_comissao": 0.0,
+                "taxa_transacao": 0.0,
+                "taxa_servico": 0.0,
             }
         )
 
@@ -292,16 +295,28 @@ def processar_pedidos_shopee(
                 "origem_venda": "SHOPEE",
             })
 
-        # --- 3. Order (Fact Header) ---
+        # --- 3. Financial data from Escrow (if available) ---
+        escrow = pedido.get("escrow_detail", {})
+        order_income = escrow.get("order_income", {})
+
+        taxa_comissao = float(order_income.get("commission_fee", 0.0) or 0.0)
+        taxa_transacao = float(order_income.get("seller_transaction_fee", 0.0) or 0.0)
+        taxa_servico = float(order_income.get("service_fee", 0.0) or 0.0)
+        frete_escrow = float(order_income.get("actual_shipping_fee", 0.0) or 0.0)
+
+        # --- 4. Order (Fact Header) ---
         pedidos.append({
             "id_pedido": order_sn,
             "id_cliente": id_cliente,
             "data_criacao": data_criacao,
             "status": status,
             "valor_produtos": valor_produtos,
-            "custo_frete": 0.0,
+            "custo_frete": frete_escrow,
             "total_pago_comprador": escrow_amount,
             "origem_venda": "SHOPEE",
+            "taxa_comissao": taxa_comissao,
+            "taxa_transacao": taxa_transacao,
+            "taxa_servico": taxa_servico,
         })
 
     # Convert to DataFrames

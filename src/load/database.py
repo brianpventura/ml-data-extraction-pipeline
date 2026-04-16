@@ -115,7 +115,7 @@ def criar_tabelas(engine: Engine) -> None:
         conn.execute(
             text("""
                 CREATE TABLE IF NOT EXISTS fato_pedido (
-                    id_pedido BIGINT PRIMARY KEY,
+                    id_pedido VARCHAR(50) PRIMARY KEY,
                     id_cliente BIGINT,
                     data_criacao DATETIME NOT NULL,
                     status VARCHAR(50) NOT NULL,
@@ -132,7 +132,7 @@ def criar_tabelas(engine: Engine) -> None:
             text("""
                 CREATE TABLE IF NOT EXISTS fato_itens_pedido (
                     id_registro INT AUTO_INCREMENT PRIMARY KEY,
-                    id_pedido BIGINT NOT NULL,
+                    id_pedido VARCHAR(50) NOT NULL,
                     id_produto VARCHAR(50) NOT NULL,
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,

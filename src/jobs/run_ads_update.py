@@ -23,6 +23,7 @@ Expected HTTP error codes:
 import datetime
 import logging
 from typing import Any, Optional
+from tqdm import tqdm
 
 import pandas as pd
 import requests
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _ADS_BASE_URL = ADS_BASE_URL
 _REQUEST_TIMEOUT = REQUEST_TIMEOUT
+_INDICE_URL_ADS_VALIDA = None
+
 
 
 def _ads_headers(access_token: str) -> dict[str, str]:
@@ -226,6 +229,8 @@ def _buscar_metricas_campanha(
     Returns:
         List of metric dictionaries, or empty list.
     """
+    global _INDICE_URL_ADS_VALIDA
+
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
@@ -243,10 +248,16 @@ def _buscar_metricas_campanha(
         f"https://api.mercadolibre.com/advertising/campaigns/{campaign_id}/metrics?user_id={user_id}&date_from={data_inicio}&date_to={data_fim}&aggregation_type=daily&group_by=date",
     ]
 
-    for url in urls_para_testar:
+    urls_originais = urls_para_testar.copy()
+    if _INDICE_URL_ADS_VALIDA is not None:
+        urls_para_testar = [urls_originais[_INDICE_URL_ADS_VALIDA]]
+
+    for i, url in enumerate(urls_para_testar):
         try:
             resp = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
             if resp.status_code == 200:
+                if _INDICE_URL_ADS_VALIDA is None:
+                    _INDICE_URL_ADS_VALIDA = urls_originais.index(url)
                 dados = resp.json()
                 # Normalize to list
                 if isinstance(dados, dict):
@@ -399,12 +410,12 @@ def atualizar_modulo_ads(
             # Renew token per chunk to prevent expiration on long runs
             access_token, user_id = cliente_ml.obter_token_acesso()
 
-            print(f"   [{idx}/{total_chunks}] Bloco: {chunk_inicio} → {chunk_fim}...", end=" ")
+            print(f"   [{idx}/{total_chunks}] Bloco: {chunk_inicio} → {chunk_fim}...", flush=True)
             registros_bloco = 0
 
             # Strategy A: Per-campaign metrics
             if campanhas:
-                for camp in campanhas:
+                for camp in tqdm(campanhas, desc="Campanhas Ads", unit="camp"):
                     camp_id = str(camp.get("id", ""))
                     camp_nome = camp.get("name", "Campanha Sem Nome")
 

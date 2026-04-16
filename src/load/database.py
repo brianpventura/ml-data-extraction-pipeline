@@ -123,6 +123,9 @@ def criar_tabelas(engine: Engine) -> None:
                     custo_frete DECIMAL(10,2) DEFAULT 0.00,
                     total_pago_comprador DECIMAL(10,2) NOT NULL,
                     origem_venda VARCHAR(100),
+                    taxa_comissao DECIMAL(10,2) DEFAULT 0.00,
+                    taxa_transacao DECIMAL(10,2) DEFAULT 0.00,
+                    taxa_servico DECIMAL(10,2) DEFAULT 0.00,
                     FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
@@ -251,15 +254,20 @@ def salvar_no_banco(
                     text("""
                         INSERT INTO fato_pedido (id_pedido, id_cliente, data_criacao,
                                                status, valor_produtos, custo_frete,
-                                               total_pago_comprador, origem_venda)
+                                               total_pago_comprador, origem_venda,
+                                               taxa_comissao, taxa_transacao, taxa_servico)
                         SELECT id_pedido, id_cliente, data_criacao, status,
-                               valor_produtos, custo_frete, total_pago_comprador, origem_venda
+                               valor_produtos, custo_frete, total_pago_comprador, origem_venda,
+                               taxa_comissao, taxa_transacao, taxa_servico
                         FROM stg_pedidos
                         ON DUPLICATE KEY UPDATE
                             status = VALUES(status),
                             total_pago_comprador = VALUES(total_pago_comprador),
                             custo_frete = VALUES(custo_frete),
-                            origem_venda = VALUES(origem_venda);
+                            origem_venda = VALUES(origem_venda),
+                            taxa_comissao = VALUES(taxa_comissao),
+                            taxa_transacao = VALUES(taxa_transacao),
+                            taxa_servico = VALUES(taxa_servico);
                     """)
                 )
                 conn.execute(text("DROP TABLE IF EXISTS stg_pedidos;"))

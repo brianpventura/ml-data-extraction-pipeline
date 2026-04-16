@@ -53,6 +53,7 @@ _TOKEN_PATH = "/api/v2/auth/token/get"
 _REFRESH_TOKEN_PATH = "/api/v2/auth/access_token/get"
 _ORDERS_PATH = "/api/v2/order/get_order_list"
 _ORDER_DETAIL_PATH = "/api/v2/order/get_order_detail"
+_ESCROW_PATH = "/api/v2/payment/get_escrow_detail"
 
 # Shopee allows max 100 per page on order list; we use 50 for safety
 _PAGE_SIZE = 50
@@ -618,8 +619,33 @@ class ShopeeClient:
         finally:
             pbar.close()
 
+        # --- Step 3: Financial enrichment via Escrow ---
         logger.info(
-            "Shopee: Extracao completa. %d pedidos com detalhes obtidos.",
+            "Shopee: Enriquecendo %d pedidos com dados financeiros (escrow)...",
+            len(todos_pedidos),
+        )
+
+        pbar_escrow = tqdm(
+            total=len(todos_pedidos),
+            desc="Shopee Escrow Detail",
+            unit="ped",
+            colour="magenta",
+        )
+
+        try:
+            for pedido in todos_pedidos:
+                sn = pedido.get("order_sn", "")
+                if sn:
+                    pedido["escrow_detail"] = self._buscar_detalhes_escrow(sn)
+                else:
+                    pedido["escrow_detail"] = {}
+                pbar_escrow.update(1)
+                time.sleep(THROTTLE_DELAY_SECONDS)
+        finally:
+            pbar_escrow.close()
+
+        logger.info(
+            "Shopee: Extracao completa. %d pedidos com detalhes e escrow obtidos.",
             len(todos_pedidos),
         )
         return todos_pedidos
@@ -627,6 +653,60 @@ class ShopeeClient:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _buscar_detalhes_escrow(self, order_sn: str) -> dict:
+        """Fetches the financial escrow breakdown for a single order.
+
+        Calls ``/api/v2/payment/get_escrow_detail`` to obtain fee
+        breakdowns (commission, transaction, service, shipping).
+
+        Args:
+            order_sn: Shopee order serial number.
+
+        Returns:
+            The ``response`` dict from the API, or an empty dict
+            if the call fails or escrow is not yet released.
+        """
+        tentativas_rede = 0
+
+        while True:
+            try:
+                params = self._gerar_parametros_autenticados(_ESCROW_PATH)
+                params["order_sn"] = order_sn
+
+                url = f"{_API_HOST}{_ESCROW_PATH}"
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                dados = resp.json()
+
+                erro = dados.get("error", "")
+
+                # Token refresh on auth error
+                if erro in ("error_auth", "error_permission") or resp.status_code == 401:
+                    self.obter_token_acesso()
+                    params = self._gerar_parametros_autenticados(_ESCROW_PATH)
+                    params["order_sn"] = order_sn
+                    resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                    dados = resp.json()
+                    erro = dados.get("error", "")
+
+                if erro:
+                    # Escrow may not be available for unpaid/cancelled orders
+                    logger.debug(
+                        "Escrow indisponivel para %s: %s", order_sn, erro
+                    )
+                    return {}
+
+                return dados.get("response", {})
+
+            except requests.exceptions.RequestException as exc:
+                tentativas_rede += 1
+                if tentativas_rede > MAX_NETWORK_RETRIES:
+                    logger.warning(
+                        "Falha ao obter escrow de %s apos %d tentativas: %s",
+                        order_sn, MAX_NETWORK_RETRIES, exc,
+                    )
+                    return {}
+                time.sleep(RETRY_DELAY_SECONDS)
 
     @staticmethod
     def _parse_iso_date(date_str: str) -> datetime.datetime:

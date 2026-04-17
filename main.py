@@ -140,6 +140,7 @@ def executar_pipeline(nome_loja: str) -> None:
     )
     from src.jobs.run_ads_update import atualizar_modulo_ads
     from src.jobs.run_costs_update import atualizar_modulo_operacional
+    from src.jobs.run_shopee_ads_update import atualizar_modulo_shopee_ads
 
     print(f"\n  [Loja ativa] {nome_loja.upper()}")
     print("=====================================================\n")
@@ -265,15 +266,18 @@ def executar_pipeline(nome_loja: str) -> None:
                 "Shopee nao configurada para esta loja (pulando): %s", exc
             )
 
-        logger.info("Etapa 7/9: Atualizando custos no banco de dados...")
+        logger.info("Etapa 7/10: Atualizando custos no banco de dados...")
         if df_custos is not None and not df_custos.empty:
             atualizados = atualizar_custos_no_banco(df_custos)
             logger.info("%d produto(s) com custo atualizado.", atualizados)
 
-        logger.info("Etapa 8/9: Extraindo custos do Mercado Ads...")
+        logger.info("Etapa 8/10: Extraindo custos do Mercado Ads...")
         _despachar_modulo(atualizar_modulo_ads, dt_inicio_str, dt_fim_str, dias, escolha)
 
-        logger.info("Etapa 9/9: Extraindo Custos Operacionais (Full e Devoluções)...")
+        logger.info("Etapa 9/10: Extraindo custos do Shopee Ads...")
+        _despachar_modulo(atualizar_modulo_shopee_ads, dt_inicio_str, dt_fim_str, dias, escolha)
+
+        logger.info("Etapa 10/10: Extraindo Custos Operacionais (Full e Devoluções)...")
         _despachar_modulo(atualizar_modulo_operacional, dt_inicio_str, dt_fim_str, dias, escolha)
 
         print(f"\n>>> Pipeline finalizado com sucesso! Loja: {nome_loja.upper()} -- Dados prontos para o Power BI.")

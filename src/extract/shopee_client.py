@@ -54,6 +54,8 @@ _REFRESH_TOKEN_PATH = "/api/v2/auth/access_token/get"
 _ORDERS_PATH = "/api/v2/order/get_order_list"
 _ORDER_DETAIL_PATH = "/api/v2/order/get_order_detail"
 _ESCROW_PATH = "/api/v2/payment/get_escrow_detail"
+_ADS_CAMPAIGNS_PATH = "/api/v2/ads/get_campaigns"
+_ADS_PERFORMANCE_PATH = "/api/v2/ads/get_campaign_performance"
 
 # Shopee allows max 100 per page on order list; we use 50 for safety
 _PAGE_SIZE = 50
@@ -649,6 +651,92 @@ class ShopeeClient:
             len(todos_pedidos),
         )
         return todos_pedidos
+
+    # ------------------------------------------------------------------
+    # Ads & Marketing Methods
+    # ------------------------------------------------------------------
+
+    def obter_campanhas_ads(self) -> list[dict[str, Any]]:
+        """Busca todas as campanhas de Ads ativas da loja.
+
+        Retorna:
+            Lista de dicionários representando as campanhas, ou uma lista
+            vazia se a API retornar erro de permissão.
+        """
+        params = self._gerar_parametros_autenticados(_ADS_CAMPAIGNS_PATH)
+        url = f"{_API_HOST}{_ADS_CAMPAIGNS_PATH}"
+        
+        try:
+            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            
+            # Trata erro de permissão (Forbidden)
+            if resp.status_code == 403 or (resp.status_code == 200 and resp.json().get("error") == "error_permission"):
+                logger.warning("Shopee: Conta não possui permissão para acessar Ads (HTTP 403 / error_permission).")
+                return []
+                
+            resp.raise_for_status()
+            dados = resp.json()
+            
+            # Renovação de token se expirado
+            if dados.get("error") in ("error_auth", "error_permission"):
+                logger.warning("Shopee: Token expirado ao buscar campanhas de Ads. Ententando renovar...")
+                self.obter_token_acesso()
+                params = self._gerar_parametros_autenticados(_ADS_CAMPAIGNS_PATH)
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                dados = resp.json()
+
+            return dados.get("response", {}).get("campaign_list", [])
+            
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Shopee: Falha de rede ao buscar campanhas de Ads: %s", exc)
+            return []
+
+    def obter_metricas_ads_campanha(self, campaign_id: str, date_from: str, date_to: str) -> list[dict[str, Any]]:
+        """Busca as métricas de performance diárias de uma campanha específica.
+
+        Args:
+            campaign_id: O ID da campanha.
+            date_from: Data início no formato ISO ou string (ex: '2023-01-01').
+            date_to: Data fim no formato ISO ou string.
+
+        Retorna:
+            Lista de métricas de performance diária.
+        """
+        # Converter datas para Unix Timestamp (conforme o padrão da Shopee API)
+        dt_inicio = self._parse_iso_date(date_from)
+        dt_fim = self._parse_iso_date(date_to)
+        
+        params = self._gerar_parametros_autenticados(_ADS_PERFORMANCE_PATH)
+        params["campaign_id"] = campaign_id
+        params["start_time"] = int(dt_inicio.timestamp())
+        params["end_time"] = int(dt_fim.timestamp())
+        
+        url = f"{_API_HOST}{_ADS_PERFORMANCE_PATH}"
+        
+        try:
+            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 403:
+                return []
+                
+            resp.raise_for_status()
+            dados = resp.json()
+
+            if dados.get("error") in ("error_auth", "error_permission"):
+                self.obter_token_acesso()
+                params = self._gerar_parametros_autenticados(_ADS_PERFORMANCE_PATH)
+                params["campaign_id"] = campaign_id
+                params["start_time"] = int(dt_inicio.timestamp())
+                params["end_time"] = int(dt_fim.timestamp())
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                dados = resp.json()
+
+            return dados.get("response", {}).get("performance_list", [])
+            
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Shopee: Falha ao buscar métricas da campanha %s: %s", campaign_id, exc)
+            return []
 
     # ------------------------------------------------------------------
     # Private helpers

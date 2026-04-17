@@ -126,6 +126,8 @@ def criar_tabelas(engine: Engine) -> None:
                     taxa_comissao DECIMAL(10,2) DEFAULT 0.00,
                     taxa_transacao DECIMAL(10,2) DEFAULT 0.00,
                     taxa_servico DECIMAL(10,2) DEFAULT 0.00,
+                    custo_full_shopee DECIMAL(10,2) DEFAULT 0.00,
+                    custo_afiliados DECIMAL(10,2) DEFAULT 0.00,
                     FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
@@ -255,10 +257,12 @@ def salvar_no_banco(
                         INSERT INTO fato_pedido (id_pedido, id_cliente, data_criacao,
                                                status, valor_produtos, custo_frete,
                                                total_pago_comprador, origem_venda,
-                                               taxa_comissao, taxa_transacao, taxa_servico)
+                                               taxa_comissao, taxa_transacao, taxa_servico,
+                                               custo_full_shopee, custo_afiliados)
                         SELECT id_pedido, id_cliente, data_criacao, status,
                                valor_produtos, custo_frete, total_pago_comprador, origem_venda,
-                               taxa_comissao, taxa_transacao, taxa_servico
+                               taxa_comissao, taxa_transacao, taxa_servico,
+                               custo_full_shopee, custo_afiliados
                         FROM stg_pedidos
                         ON DUPLICATE KEY UPDATE
                             status = VALUES(status),
@@ -267,7 +271,9 @@ def salvar_no_banco(
                             origem_venda = VALUES(origem_venda),
                             taxa_comissao = VALUES(taxa_comissao),
                             taxa_transacao = VALUES(taxa_transacao),
-                            taxa_servico = VALUES(taxa_servico);
+                            taxa_servico = VALUES(taxa_servico),
+                            custo_full_shopee = VALUES(custo_full_shopee),
+                            custo_afiliados = VALUES(custo_afiliados);
                     """)
                 )
                 conn.execute(text("DROP TABLE IF EXISTS stg_pedidos;"))

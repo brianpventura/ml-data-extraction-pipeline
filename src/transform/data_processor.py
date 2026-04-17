@@ -83,6 +83,8 @@ def processar_pedidos(
                 "taxa_comissao": 0.0,
                 "taxa_transacao": 0.0,
                 "taxa_servico": 0.0,
+                "custo_full_shopee": 0.0,
+                "custo_afiliados": 0.0,
             }
         )
 
@@ -298,11 +300,27 @@ def processar_pedidos_shopee(
         # --- 3. Financial data from Escrow (if available) ---
         escrow = pedido.get("escrow_detail", {})
         order_income = escrow.get("order_income", {})
+        buyer_info = escrow.get("buyer_payment_info", {})
 
-        taxa_comissao = float(order_income.get("commission_fee", 0.0) or 0.0)
-        taxa_transacao = float(order_income.get("seller_transaction_fee", 0.0) or 0.0)
-        taxa_servico = float(order_income.get("service_fee", 0.0) or 0.0)
-        frete_escrow = float(order_income.get("actual_shipping_fee", 0.0) or 0.0)
+        taxa_comissao = float(order_income.get("commission_fee") or 0.0)
+        taxa_transacao = float(order_income.get("seller_transaction_fee") or 0.0)
+        taxa_servico = float(order_income.get("service_fee") or 0.0)
+        custo_frete = float(order_income.get("actual_shipping_fee") or 0.0)
+        custo_full_shopee = float(order_income.get("fbs_fee") or 0.0)
+        custo_afiliados = float(order_income.get("order_ams_commission_fee") or 0.0)
+
+        # Fallback em cascata para o total pago:
+        total_pago = float(
+            buyer_info.get("buyer_total_amount") or 
+            order_income.get("buyer_total_amount") or 
+            0.0
+        )
+
+        # Se não vier no repasse financeiro, usamos o total_amount do pedido original
+        if total_pago == 0.0:
+            total_pago = float(pedido.get("total_amount") or 0.0)
+
+        total_pago_comprador = total_pago
 
         # --- 4. Order (Fact Header) ---
         pedidos.append({
@@ -311,12 +329,14 @@ def processar_pedidos_shopee(
             "data_criacao": data_criacao,
             "status": status,
             "valor_produtos": valor_produtos,
-            "custo_frete": frete_escrow,
-            "total_pago_comprador": escrow_amount,
+            "custo_frete": custo_frete,
+            "total_pago_comprador": total_pago_comprador,
             "origem_venda": "SHOPEE",
             "taxa_comissao": taxa_comissao,
             "taxa_transacao": taxa_transacao,
             "taxa_servico": taxa_servico,
+            "custo_full_shopee": custo_full_shopee,
+            "custo_afiliados": custo_afiliados,
         })
 
     # Convert to DataFrames

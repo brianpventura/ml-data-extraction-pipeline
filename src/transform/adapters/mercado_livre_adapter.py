@@ -104,6 +104,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
                     "id_anuncio": str(produto.get("id", "")),
                     "id_canal": self.id_canal,
                     "sku": produto.get("seller_sku", ""),
-                    "titulo": produto.get("title", "")
+                    "titulo_anuncio": produto.get("title", ""),
+                    "tipo_anuncio": produto.get("listing_type_id", "")
                 })
         return anuncios

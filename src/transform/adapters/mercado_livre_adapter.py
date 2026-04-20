@@ -7,14 +7,32 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
     Adapter implementation for Mercado Livre API data.
     """
 
+    def padronizar_clientes(self) -> List[Dict[str, Any]]:
+        clientes = []
+        for pedido in self.raw_data:
+            comprador = pedido.get("buyer", {})
+            id_cliente = int(comprador.get("id")) if comprador.get("id") else 0
+            if id_cliente != 0:
+                clientes.append({
+                    "id_cliente": id_cliente,
+                    "nickname": comprador.get("nickname", ""),
+                    "nome_completo": ""
+                })
+        return clientes
+
     def padronizar_pedidos(self) -> List[Dict[str, Any]]:
         pedidos = []
         for pedido in self.raw_data:
             id_pedido = str(pedido.get("id", ""))
             
+            comprador = pedido.get("buyer", {})
+            # ML buyer obj has 'id' which is an integer
+            id_cliente = int(comprador.get("id")) if comprador.get("id") else 0
+            
             pedidos.append({
                 "id_pedido": id_pedido,
                 "id_canal": self.id_canal,
+                "id_cliente": id_cliente,
                 "data_criacao": pedido.get("date_created", ""),
                 "status": pedido.get("status", ""),
                 "valor_produtos": float(pedido.get("total_amount", 0.0)),

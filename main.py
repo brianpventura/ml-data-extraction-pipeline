@@ -225,10 +225,11 @@ def executar_pipeline(nome_loja: str) -> None:
         df_itens = resultados_v2.get("df_fato_itens")
         df_transacoes = resultados_v2.get("df_fato_transacoes")
         df_anuncios = resultados_v2.get("df_dim_anuncios")
+        df_cliente = resultados_v2.get("df_dim_cliente")
 
         logger.info("Etapa 5/9: Inserindo dados ML no MySQL...")
         salvar_no_banco(
-            df_dim_cliente=pd.DataFrame(),
+            df_dim_cliente=df_cliente,
             df_dim_produto=pd.DataFrame(),
             df_fato_pedido=df_pedido,
             df_fato_itens_pedido=df_itens,
@@ -258,10 +259,11 @@ def executar_pipeline(nome_loja: str) -> None:
                 df_itens_sp = resultados_shopee_v2.get("df_fato_itens")
                 df_transacoes_sp = resultados_shopee_v2.get("df_fato_transacoes")
                 df_anuncios_sp = resultados_shopee_v2.get("df_dim_anuncios")
+                df_cliente_sp = resultados_shopee_v2.get("df_dim_cliente")
 
                 logger.info("Inserindo dados Shopee no MySQL...")
                 salvar_no_banco(
-                    df_dim_cliente=pd.DataFrame(),
+                    df_dim_cliente=df_cliente_sp,
                     df_dim_produto=pd.DataFrame(),
                     df_fato_pedido=df_pedido_sp,
                     df_fato_itens_pedido=df_itens_sp,

@@ -13,6 +13,11 @@ class BaseMarketplaceAdapter(ABC):
         self.id_canal = id_canal
 
     @abstractmethod
+    def padronizar_clientes(self) -> List[Dict[str, Any]]:
+        """Returns standard customers list mapping dim_cliente."""
+        pass
+
+    @abstractmethod
     def padronizar_pedidos(self) -> List[Dict[str, Any]]:
         """Returns fact data for order headers."""
         pass

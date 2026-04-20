@@ -41,7 +41,8 @@ def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
             "df_fato_pedido": pd.DataFrame(),
             "df_fato_itens": pd.DataFrame(),
             "df_fato_transacoes": pd.DataFrame(),
-            "df_dim_anuncios": pd.DataFrame()
+            "df_dim_anuncios": pd.DataFrame(),
+            "df_dim_cliente": pd.DataFrame()
         }
 
     adapter = MercadoLivreAdapter(raw_data=dados_brutos, id_canal=1)
@@ -54,20 +55,26 @@ def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
     if not df_dim_anuncios.empty:
         df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
 
+    df_dim_cliente = pd.DataFrame(adapter.padronizar_clientes())
+    if not df_dim_cliente.empty:
+        df_dim_cliente = df_dim_cliente.drop_duplicates(subset=["id_cliente"], keep="last")
+
     logger.info(
         "Processamento ML (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
-        "Transações Fin: %d | Anúncios: %d",
+        "Transações Fin: %d | Anúncios: %d | Clientes: %d",
         len(df_fato_pedido),
         len(df_fato_itens),
         len(df_fato_transacoes),
         len(df_dim_anuncios),
+        len(df_dim_cliente)
     )
 
     return {
         "df_fato_pedido": df_fato_pedido,
         "df_fato_itens": df_fato_itens,
         "df_fato_transacoes": df_fato_transacoes,
-        "df_dim_anuncios": df_dim_anuncios
+        "df_dim_anuncios": df_dim_anuncios,
+        "df_dim_cliente": df_dim_cliente
     }
 
 
@@ -161,7 +168,8 @@ def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
             "df_fato_pedido": pd.DataFrame(),
             "df_fato_itens": pd.DataFrame(),
             "df_fato_transacoes": pd.DataFrame(),
-            "df_dim_anuncios": pd.DataFrame()
+            "df_dim_anuncios": pd.DataFrame(),
+            "df_dim_cliente": pd.DataFrame()
         }
 
     adapter = ShopeeAdapter(raw_data=dados_brutos, id_canal=2)
@@ -175,20 +183,26 @@ def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
     if not df_dim_anuncios.empty:
         df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
 
+    df_dim_cliente = pd.DataFrame(adapter.padronizar_clientes())
+    if not df_dim_cliente.empty:
+        df_dim_cliente = df_dim_cliente.drop_duplicates(subset=["id_cliente"], keep="last")
+
     logger.info(
         "Processamento Shopee (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
-        "Transações Fin: %d | Anúncios: %d",
+        "Transações Fin: %d | Anúncios: %d | Clientes: %d",
         len(df_fato_pedido),
         len(df_fato_itens),
         len(df_fato_transacoes),
         len(df_dim_anuncios),
+        len(df_dim_cliente)
     )
 
     return {
         "df_fato_pedido": df_fato_pedido,
         "df_fato_itens": df_fato_itens,
         "df_fato_transacoes": df_fato_transacoes,
-        "df_dim_anuncios": df_dim_anuncios
+        "df_dim_anuncios": df_dim_anuncios,
+        "df_dim_cliente": df_dim_cliente
     }
 
 

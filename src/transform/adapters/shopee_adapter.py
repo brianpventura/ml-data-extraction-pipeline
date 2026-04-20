@@ -21,6 +21,18 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
             return ""
         return datetime.fromtimestamp(unix_ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
+    def padronizar_clientes(self) -> List[Dict[str, Any]]:
+        clientes = []
+        for pedido in self.raw_data:
+            id_cliente = int(pedido.get("buyer_user_id") or 0)
+            if id_cliente != 0:
+                clientes.append({
+                    "id_cliente": id_cliente,
+                    "nickname": pedido.get("buyer_username", ""),
+                    "nome_completo": ""
+                })
+        return clientes
+
     def padronizar_pedidos(self) -> List[Dict[str, Any]]:
         pedidos = []
         for pedido in self.raw_data:
@@ -46,14 +58,19 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
                 int(item.get("model_quantity_purchased", 1)) * float(item.get("model_discounted_price", 0.0))
                 for item in item_list
             )
+            
+            # Shopee API typically exposes 'buyer_user_id' in v2
+            id_cliente = int(pedido.get("buyer_user_id") or 0)
 
             pedidos.append({
                 "id_pedido": order_sn,
                 "id_canal": self.id_canal,
+                "id_cliente": id_cliente,
                 "data_criacao": data_criacao,
                 "status": pedido.get("order_status", ""),
                 "valor_produtos": valor_produtos,
-                "total_pago_comprador": total_pago
+                "total_pago_comprador": total_pago,
+                "origem_venda": "SHOPEE"
             })
             
         return pedidos

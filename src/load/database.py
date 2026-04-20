@@ -114,20 +114,49 @@ def criar_tabelas(engine: Engine) -> None:
 
         conn.execute(
             text("""
+                CREATE TABLE IF NOT EXISTS dim_canal_venda (
+                    id_canal INT AUTO_INCREMENT PRIMARY KEY,
+                    nome_canal VARCHAR(50) UNIQUE
+                );
+            """)
+        )
+
+        conn.execute(
+            text("""
+                CREATE TABLE IF NOT EXISTS dim_anuncio_marketplace (
+                    id_anuncio VARCHAR(50) PRIMARY KEY,
+                    id_canal INT,
+                    sku VARCHAR(100),
+                    titulo_anuncio VARCHAR(255),
+                    tipo_anuncio VARCHAR(50)
+                );
+            """)
+        )
+
+        conn.execute(
+            text("""
+                CREATE TABLE IF NOT EXISTS fato_transacoes_financeiras (
+                    id_transacao BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    id_pedido VARCHAR(50),
+                    id_canal INT,
+                    data_transacao DATE,
+                    categoria_custo VARCHAR(50),
+                    valor DECIMAL(10,2)
+                );
+            """)
+        )
+
+        conn.execute(
+            text("""
                 CREATE TABLE IF NOT EXISTS fato_pedido (
                     id_pedido VARCHAR(50) PRIMARY KEY,
                     id_cliente BIGINT,
+                    id_canal INT,
                     data_criacao DATETIME NOT NULL,
                     status VARCHAR(50) NOT NULL,
                     valor_produtos DECIMAL(10,2) NOT NULL,
-                    custo_frete DECIMAL(10,2) DEFAULT 0.00,
                     total_pago_comprador DECIMAL(10,2) NOT NULL,
                     origem_venda VARCHAR(100),
-                    taxa_comissao DECIMAL(10,2) DEFAULT 0.00,
-                    taxa_transacao DECIMAL(10,2) DEFAULT 0.00,
-                    taxa_servico DECIMAL(10,2) DEFAULT 0.00,
-                    custo_full_shopee DECIMAL(10,2) DEFAULT 0.00,
-                    custo_afiliados DECIMAL(10,2) DEFAULT 0.00,
                     FOREIGN KEY (id_cliente) REFERENCES dim_cliente(id_cliente)
                 );
             """)
@@ -138,14 +167,15 @@ def criar_tabelas(engine: Engine) -> None:
                 CREATE TABLE IF NOT EXISTS fato_itens_pedido (
                     id_registro INT AUTO_INCREMENT PRIMARY KEY,
                     id_pedido VARCHAR(50) NOT NULL,
-                    id_produto VARCHAR(50) NOT NULL,
+                    id_anuncio VARCHAR(50) NOT NULL,
+                    id_produto VARCHAR(50),
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,
                     taxa_venda DECIMAL(10,2) DEFAULT 0.00,
                     origem_venda VARCHAR(100),
                     FOREIGN KEY (id_pedido) REFERENCES fato_pedido(id_pedido),
                     FOREIGN KEY (id_produto) REFERENCES dim_produto(id_produto),
-                    UNIQUE KEY unique_item (id_pedido, id_produto)
+                    UNIQUE KEY unique_item (id_pedido, id_anuncio)
                 );
             """)
         )
@@ -188,9 +218,10 @@ def salvar_no_banco(
     df_dim_produto: pd.DataFrame,
     df_fato_pedido: pd.DataFrame,
     df_fato_itens_pedido: pd.DataFrame,
+    df_dim_anuncios: pd.DataFrame = None,
+    df_fato_transacoes: pd.DataFrame = None,
 ) -> None:
-    """Inserts transformed data into MySQL using staging tables
-    and upsert logic (ON DUPLICATE KEY UPDATE).
+    """Orchestrates DML operations for dimension and fact tables in MySQL.
 
     Staging tables are created within the same transaction to
     ensure atomicity — if the upsert fails, rollback undoes
@@ -201,9 +232,17 @@ def salvar_no_banco(
         df_dim_produto: Product dimension (with custo_unitario populated).
         df_fato_pedido: Order fact header.
         df_fato_itens_pedido: Order item fact lines.
+        df_dim_anuncios: Listings mapping.
+        df_fato_transacoes: Unpivoted financial fees.
     """
     engine = conectar_mysql()
     criar_tabelas(engine)
+    
+    # Safely handle default None arguments
+    if df_dim_anuncios is None:
+        df_dim_anuncios = pd.DataFrame()
+    if df_fato_transacoes is None:
+        df_fato_transacoes = pd.DataFrame()
 
     try:
         with engine.begin() as conn:
@@ -246,34 +285,44 @@ def salvar_no_banco(
                     "Upsert Produtos: %d registros processados.",
                     len(df_dim_produto),
                 )
+                
+            # --- 3. UPSERT ANÚNCIOS ---
+            if not df_dim_anuncios.empty:
+                df_dim_anuncios.to_sql(
+                    "stg_anuncios", con=conn, if_exists="replace", index=False
+                )
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_anuncio_marketplace (id_anuncio, id_canal, sku, titulo_anuncio, tipo_anuncio)
+                        SELECT id_anuncio, id_canal, sku, titulo_anuncio, tipo_anuncio FROM stg_anuncios
+                        ON DUPLICATE KEY UPDATE
+                            sku = VALUES(sku),
+                            titulo_anuncio = VALUES(titulo_anuncio),
+                            tipo_anuncio = VALUES(tipo_anuncio);
+                    """)
+                )
+                conn.execute(text("DROP TABLE IF EXISTS stg_anuncios;"))
+                logger.info(
+                    "Upsert Anúncios Marketplace: %d registros processados.",
+                    len(df_dim_anuncios),
+                )
 
-            # --- 3. UPSERT PEDIDOS ---
+            # --- 4. UPSERT PEDIDOS ---
             if not df_fato_pedido.empty:
                 df_fato_pedido.to_sql(
                     "stg_pedidos", con=conn, if_exists="replace", index=False
                 )
                 conn.execute(
                     text("""
-                        INSERT INTO fato_pedido (id_pedido, id_cliente, data_criacao,
-                                               status, valor_produtos, custo_frete,
-                                               total_pago_comprador, origem_venda,
-                                               taxa_comissao, taxa_transacao, taxa_servico,
-                                               custo_full_shopee, custo_afiliados)
-                        SELECT id_pedido, id_cliente, data_criacao, status,
-                               valor_produtos, custo_frete, total_pago_comprador, origem_venda,
-                               taxa_comissao, taxa_transacao, taxa_servico,
-                               custo_full_shopee, custo_afiliados
+                        INSERT INTO fato_pedido (id_pedido, id_cliente, id_canal, data_criacao,
+                                               status, valor_produtos, total_pago_comprador, origem_venda)
+                        SELECT id_pedido, id_cliente, id_canal, data_criacao, status,
+                               valor_produtos, total_pago_comprador, origem_venda
                         FROM stg_pedidos
                         ON DUPLICATE KEY UPDATE
                             status = VALUES(status),
                             total_pago_comprador = VALUES(total_pago_comprador),
-                            custo_frete = VALUES(custo_frete),
-                            origem_venda = VALUES(origem_venda),
-                            taxa_comissao = VALUES(taxa_comissao),
-                            taxa_transacao = VALUES(taxa_transacao),
-                            taxa_servico = VALUES(taxa_servico),
-                            custo_full_shopee = VALUES(custo_full_shopee),
-                            custo_afiliados = VALUES(custo_afiliados);
+                            origem_venda = VALUES(origem_venda);
                     """)
                 )
                 conn.execute(text("DROP TABLE IF EXISTS stg_pedidos;"))
@@ -282,22 +331,55 @@ def salvar_no_banco(
                     len(df_fato_pedido),
                 )
 
-            # --- 4. INSERT ITENS (IGNORE duplicados) ---
+            # --- 5. IDEMPOTENT DELETE & INSERT: ITENS & TRANSAÇÕES ---
+            if not df_fato_pedido.empty:
+                pedidos_ids = df_fato_pedido["id_pedido"].unique().tolist()
+                
+                # Delete existing related rows for idempotent replace
+                if pedidos_ids:
+                    # Parameterized batch deletion 
+                    placeholders = ", ".join([f"'{str(pid)}'" for pid in pedidos_ids])
+                    
+                    conn.execute(text(f"DELETE FROM fato_itens_pedido WHERE id_pedido IN ({placeholders})"))
+                    conn.execute(text(f"DELETE FROM fato_transacoes_financeiras WHERE id_pedido IN ({placeholders})"))
+                    
             if not df_fato_itens_pedido.empty:
                 df_fato_itens_pedido.to_sql(
                     "stg_itens", con=conn, if_exists="replace", index=False
                 )
+                # Ensure we only refer to columns actually being output by the new adapter
                 conn.execute(
                     text("""
-                        INSERT IGNORE INTO fato_itens_pedido
-                            (id_pedido, id_produto, quantidade,
-                             preco_unitario, taxa_venda, origem_venda)
-                        SELECT id_pedido, id_produto, quantidade,
-                               preco_unitario, taxa_venda, origem_venda
+                        INSERT INTO fato_itens_pedido
+                            (id_pedido, id_anuncio, quantidade, preco_unitario)
+                        SELECT id_pedido, id_anuncio, quantidade, preco_unitario
                         FROM stg_itens;
                     """)
                 )
                 conn.execute(text("DROP TABLE IF EXISTS stg_itens;"))
+                logger.info(
+                    "Insert Itens de Pedido: %d registros inseridos de forma limpa.",
+                    len(df_fato_itens_pedido),
+                )
+                
+            if not df_fato_transacoes.empty:
+                df_fato_transacoes.to_sql(
+                    "stg_transacoes", con=conn, if_exists="replace", index=False
+                )
+                # Using columns projection to avoid PK issues
+                conn.execute(
+                    text("""
+                        INSERT INTO fato_transacoes_financeiras
+                            (id_pedido, id_canal, data_transacao, categoria_custo, valor)
+                        SELECT id_pedido, id_canal, data_transacao, categoria_custo, valor
+                        FROM stg_transacoes;
+                    """)
+                )
+                conn.execute(text("DROP TABLE IF EXISTS stg_transacoes;"))
+                logger.info(
+                    "Insert Transações Financeiras: %d registros inseridos de forma limpa.",
+                    len(df_fato_transacoes),
+                )
                 logger.info(
                     "Upsert Itens: %d registros processados.", len(df_fato_itens_pedido)
                 )

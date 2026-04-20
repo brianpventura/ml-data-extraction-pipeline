@@ -134,9 +134,8 @@ def executar_pipeline(nome_loja: str) -> None:
         salvar_no_banco,
     )
     from src.transform.data_processor import (
-        enriquecer_produtos_com_custos,
-        processar_pedidos,
-        processar_pedidos_shopee,
+        processar_pedidos_mercado_livre_v2,
+        processar_pedidos_shopee_v2,
     )
     from src.jobs.run_ads_update import atualizar_modulo_ads
     from src.jobs.run_costs_update import atualizar_modulo_operacional
@@ -221,16 +220,21 @@ def executar_pipeline(nome_loja: str) -> None:
         # TRANSFORM + LOAD — Mercado Livre
         # ==============================================================
         logger.info("Etapa 4/9: Transformando dados ML (Star Schema)...")
-        df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido = processar_pedidos(
-            dados_brutos
-        )
-
-        if df_custos is not None and not df_custos.empty:
-            logger.info("Enriquecendo produtos ML com custos da planilha...")
-            df_dim_produto = enriquecer_produtos_com_custos(df_dim_produto, df_custos)
+        resultados_v2 = processar_pedidos_mercado_livre_v2(dados_brutos)
+        df_pedido = resultados_v2.get("df_fato_pedido")
+        df_itens = resultados_v2.get("df_fato_itens")
+        df_transacoes = resultados_v2.get("df_fato_transacoes")
+        df_anuncios = resultados_v2.get("df_dim_anuncios")
 
         logger.info("Etapa 5/9: Inserindo dados ML no MySQL...")
-        salvar_no_banco(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)
+        salvar_no_banco(
+            df_dim_cliente=pd.DataFrame(),
+            df_dim_produto=pd.DataFrame(),
+            df_fato_pedido=df_pedido,
+            df_fato_itens_pedido=df_itens,
+            df_dim_anuncios=df_anuncios,
+            df_fato_transacoes=df_transacoes
+        )
 
         # ==============================================================
         # EXTRACT + TRANSFORM + LOAD — Shopee (condicional)
@@ -249,15 +253,21 @@ def executar_pipeline(nome_loja: str) -> None:
 
             if dados_shopee:
                 logger.info("Transformando %d pedidos Shopee...", len(dados_shopee))
-                df_cli_sp, df_prod_sp, df_ped_sp, df_itens_sp = processar_pedidos_shopee(
-                    dados_shopee
-                )
-
-                if df_custos is not None and not df_custos.empty:
-                    df_prod_sp = enriquecer_produtos_com_custos(df_prod_sp, df_custos)
+                resultados_shopee_v2 = processar_pedidos_shopee_v2(dados_shopee)
+                df_pedido_sp = resultados_shopee_v2.get("df_fato_pedido")
+                df_itens_sp = resultados_shopee_v2.get("df_fato_itens")
+                df_transacoes_sp = resultados_shopee_v2.get("df_fato_transacoes")
+                df_anuncios_sp = resultados_shopee_v2.get("df_dim_anuncios")
 
                 logger.info("Inserindo dados Shopee no MySQL...")
-                salvar_no_banco(df_cli_sp, df_prod_sp, df_ped_sp, df_itens_sp)
+                salvar_no_banco(
+                    df_dim_cliente=pd.DataFrame(),
+                    df_dim_produto=pd.DataFrame(),
+                    df_fato_pedido=df_pedido_sp,
+                    df_fato_itens_pedido=df_itens_sp,
+                    df_dim_anuncios=df_anuncios_sp,
+                    df_fato_transacoes=df_transacoes_sp
+                )
             else:
                 logger.info("Nenhum pedido Shopee encontrado no periodo.")
 

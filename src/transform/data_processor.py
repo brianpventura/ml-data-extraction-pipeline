@@ -17,6 +17,7 @@ from typing import Any
 import pandas as pd
 
 from src.config.utils import normalizar_sku
+from src.transform.adapters.shopee_adapter import ShopeeAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -218,154 +219,49 @@ def enriquecer_produtos_com_custos(
 # Shopee transformation — Star Schema
 # ---------------------------------------------------------------------------
 
-def processar_pedidos_shopee(
-    dados_brutos: list[dict[str, Any]],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Transforms raw Shopee API orders into 4 DataFrames following
-    the same Star Schema model used for the Mercado Livre pipeline.
-
-    Mapping:
-        - ``order_sn`` → ``id_pedido`` (VARCHAR — alphanumeric)
-        - ``buyer_user_id`` → ``id_cliente``
-        - ``buyer_username`` → ``nickname``
-        - ``create_time`` (Unix) → ``data_criacao`` (``%Y-%m-%d %H:%M:%S``)
-        - ``item_list[].item_id`` → ``id_produto``
-        - ``item_list[].item_sku`` → ``sku``
-        - ``item_list[].model_quantity_purchased`` → ``quantidade``
-        - ``item_list[].model_discounted_price`` → ``preco_unitario``
-        - ``valor_produtos`` = sum(quantidade × preço) from ``item_list``
-        - ``escrow_amount`` → ``total_pago_comprador``
-        - ``origem_venda`` = ``'SHOPEE'``
+def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
+    """Parses Shopee API order payload into Star Schema DataFrames via Adapter.
 
     Args:
-        dados_brutos: List of order dictionaries returned by
-            ``ShopeeClient.buscar_todos_pedidos()``.
+        dados_brutos: List of order dictionaries.
 
     Returns:
-        Tuple of 4 DataFrames:
-        ``(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)``
+        Dict mapped to 4 DataFrames.
     """
-    clientes: list[dict] = []
-    produtos: list[dict] = []
-    pedidos: list[dict] = []
-    itens_pedido: list[dict] = []
+    if not dados_brutos:
+        return {
+            "df_fato_pedido": pd.DataFrame(),
+            "df_fato_itens": pd.DataFrame(),
+            "df_fato_transacoes": pd.DataFrame(),
+            "df_dim_anuncios": pd.DataFrame()
+        }
 
-    for pedido in dados_brutos:
-        order_sn = str(pedido.get("order_sn", ""))
-        id_cliente = pedido.get("buyer_user_id", 0)
-        nickname = pedido.get("buyer_username", "")
-        status = pedido.get("order_status", "")
-        escrow_amount = float(pedido.get("escrow_amount", 0.0))
+    adapter = ShopeeAdapter(raw_data=dados_brutos, id_canal=2)
 
-        # Convert Unix timestamp to datetime string
-        create_time_unix = pedido.get("create_time", 0)
-        data_criacao = _unix_para_datetime(create_time_unix)
-
-        # --- 1. Customer (Dimension) ---
-        clientes.append({
-            "id_cliente": id_cliente,
-            "nickname": nickname,
-            "nome_completo": "",
-        })
-
-        # --- 2. Items and Products ---
-        item_list = pedido.get("item_list", [])
-        valor_produtos = 0.0
-
-        for item in item_list:
-            item_id = str(item.get("item_id", ""))
-            item_sku = item.get("item_sku", "")
-            item_name = item.get("item_name", "")
-            quantidade = int(item.get("model_quantity_purchased", 1))
-            preco_unitario = float(item.get("model_discounted_price", 0.0))
-
-            valor_produtos += quantidade * preco_unitario
-
-            produtos.append({
-                "id_produto": item_id,
-                "sku": item_sku,
-                "descricao": item_name,
-                "custo_unitario": 0.00,
-            })
-
-            itens_pedido.append({
-                "id_pedido": order_sn,
-                "id_produto": item_id,
-                "quantidade": quantidade,
-                "preco_unitario": preco_unitario,
-                "taxa_venda": 0.0,
-                "origem_venda": "SHOPEE",
-            })
-
-        # --- 3. Financial data from Escrow (if available) ---
-        escrow = pedido.get("escrow_detail", {})
-        order_income = escrow.get("order_income", {})
-        buyer_info = escrow.get("buyer_payment_info", {})
-
-        taxa_comissao = float(order_income.get("commission_fee") or 0.0)
-        taxa_transacao = float(order_income.get("seller_transaction_fee") or 0.0)
-        taxa_servico = float(order_income.get("service_fee") or 0.0)
-        custo_frete = float(order_income.get("actual_shipping_fee") or 0.0)
-        custo_full_shopee = float(order_income.get("fbs_fee") or 0.0)
-        custo_afiliados = float(order_income.get("order_ams_commission_fee") or 0.0)
-
-        # Fallback em cascata para o total pago:
-        total_pago = float(
-            buyer_info.get("buyer_total_amount") or 
-            order_income.get("buyer_total_amount") or 
-            0.0
-        )
-
-        # Se não vier no repasse financeiro, usamos o total_amount do pedido original
-        if total_pago == 0.0:
-            total_pago = float(pedido.get("total_amount") or 0.0)
-
-        total_pago_comprador = total_pago
-
-        # --- 4. Order (Fact Header) ---
-        pedidos.append({
-            "id_pedido": order_sn,
-            "id_cliente": id_cliente,
-            "data_criacao": data_criacao,
-            "status": status,
-            "valor_produtos": valor_produtos,
-            "custo_frete": custo_frete,
-            "total_pago_comprador": total_pago_comprador,
-            "origem_venda": "SHOPEE",
-            "taxa_comissao": taxa_comissao,
-            "taxa_transacao": taxa_transacao,
-            "taxa_servico": taxa_servico,
-            "custo_full_shopee": custo_full_shopee,
-            "custo_afiliados": custo_afiliados,
-        })
-
-    # Convert to DataFrames
-    df_dim_cliente = pd.DataFrame(clientes)
-    df_dim_produto = pd.DataFrame(produtos)
-    df_fato_pedido = pd.DataFrame(pedidos)
-    df_fato_itens_pedido = pd.DataFrame(itens_pedido)
-
-    # Deduplicate dimensions
-    if not df_dim_cliente.empty:
-        df_dim_cliente = df_dim_cliente.drop_duplicates(
-            subset=["id_cliente"], keep="last"
-        )
-
-    if not df_dim_produto.empty:
-        df_dim_produto = df_dim_produto.drop_duplicates(
-            subset=["id_produto"], keep="last"
-        )
+    df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
+    df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
+    df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
+    
+    # Processa dim_anuncios e dropa duplicatas (garante id único)
+    df_dim_anuncios = pd.DataFrame(adapter.padronizar_anuncios())
+    if not df_dim_anuncios.empty:
+        df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
 
     logger.info(
-        "Processamento Shopee concluido — Clientes: %d | Produtos: %d | "
-        "Pedidos: %d | Itens: %d",
-        len(df_dim_cliente),
-        len(df_dim_produto),
+        "Processamento Shopee (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
+        "Transações Fin: %d | Anúncios: %d",
         len(df_fato_pedido),
-        len(df_fato_itens_pedido),
+        len(df_fato_itens),
+        len(df_fato_transacoes),
+        len(df_dim_anuncios),
     )
 
-    return df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido
+    return {
+        "df_fato_pedido": df_fato_pedido,
+        "df_fato_itens": df_fato_itens,
+        "df_fato_transacoes": df_fato_transacoes,
+        "df_dim_anuncios": df_dim_anuncios
+    }
 
 
 # ---------------------------------------------------------------------------

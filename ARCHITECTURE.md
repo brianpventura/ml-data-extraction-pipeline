@@ -1,105 +1,96 @@
-# Documento Arquitetural do Sistema — ETL Multi-Tenant
+# Arquitetura Multi-Channel do Pipeline ETL
 
-> **Status:** Ativo | **Versão:** 1.0
-> **Escopo:** Pipeline de Extração, Transformação e Carga (ETL) de APIs de E-commerce.
+## 1. Visão Geral
+Este projeto é um Pipeline de ETL (Extract, Transform, Load) Multi-Channel focado em extrair dados massivos e granulares de comércio eletrônico (pedidos, custos de campanhas ads, tarifas financeiras) provenientes de gateways de e-commerce e processá-los para Inteligência de Negócio (BI).
 
-Este documento serve como o guia definitivo do sistema `data_mercadoLivre`, delineando suas responsabilidades, decisões de design e detalhes estruturais.
-
----
-
-## 1. Visão Geral do Sistema (System Overview)
-
-O sistema consiste em um Pipeline ETL construído em arquitetura **Multi-Tenant**, voltado a dados do setor de E-Commerce. Ele automatiza as rotinas de:
-
-- **Extração** de pedidos, conversões, itens das campanhas de publicidade e faturas através de integrações via conectores de API (atualmente Mercado Livre, com arquitetura pronta para Shopee).
-- **Transformação** de dados complexos aninhados e de formato JSON dinâmico para tabelas simplificadas (Star Schema) visando visualização e Inteligência de Negócio. Efetua a fusão de APIs de consumo com planilhas de custo.
-- **Carga** robusta, tolerante a falhas em um banco de dados relacional MySQL formatado sob princípios de Data Warehouse (Tabelas Fato e Dimensões).
+Nossa arquitetura prioriza abstração de negócios rígida. Ao invés de uma infinidade de for-loops por toda a central, o processamento ocorre via **Adapter Pattern**. Todos os marketplaces distintos obedecem a uma única padronização transacional para injetar os dados num formato otimizado "Unpivoted" (ideal para relatórios financeiros dinâmicos).
 
 ---
 
-## 2. Stack Tecnológica (Tech Stack)
+## 2. Arquitetura de Dados (Database Schema)
 
-A infraestrutura foi construída sobre tecnologias padronizadas do ecossistema de dados moderno em Python:
+Adotamos a implementação de modelo estrutural **Star Schema Unpivoted**. Neste modelo, a tabela `fato_pedido` atua estritamente como um cabeçalho relacional. Taxas financeiras de vendas e transigências foram extraídas, organizadas em linhas verticais (UNPIVOT) e direcionadas à `fato_transacoes_financeiras`.
 
-- **Linguagem Base:** Python 3.x
-- **Pacotes Essenciais:**
-  - `pandas`: Processamento de regras de negócios na memória, construção dos fluxos de dimensão e limpezas.
-  - `requests`: Comunicação REST API sincronizada aos endpoints dos Marketplaces.
-  - `SQLAlchemy` e `PyMySQL`: Mecanismo ORM e Engine transacional relacional para conversão nativa do DataFrame ao SQL de modo eficaz.
-  - `python-dotenv`: Gestão e isolamento rígido de múltiplos escopos de segredos por tenant.
-- **Banco de Dados:** MySQL (atuando como repositório final Data Warehouse).
+### Dimensões (Entities)
+- **`dim_canal_venda`**: Registra os canais conectados `(Ex: 1=Mercado Livre, 2=Shopee)`.
+- **`dim_cliente`**: Centralização de dados globais dos compradores.
+- **`dim_produto`**: Centralização local dos SKUs, descrições base e custo da planilha primária.
+- **`dim_anuncio_marketplace`**: Mapeia anúncios publicamente listados por plataforma conectando-os internamente ao SKU.
 
----
-
-## 3. Arquitetura e Padrões de Projeto (Architecture & Patterns)
-
-O projeto baseia-se numa estrutura pragmática que divide rigorosamente responsabilidades e implementa diversos de padrões sólidos (*SOLID*).
-
-### Camadas de Responsabilidade
-
-1. **Extract (src/extract):** Intermediam exclusivamente o contrato em HTTP ou sistema de arquivos com plataformas de terceiros.
-2. **Transform (src/transform):** Realizam as mutações sistêmicas como merge, mapeamento e de duplicações de dicionários isolados do código DB ou API.
-3. **Load (src/load):** A camada transacional (DDL e DML), sem processamento comercial, cuidando apenas de transições SQL brutas, integridades ACID com garantias de atomicidade usando pool de conexões.
-
-### Padrões de Implementação (Design Patterns e Práticas)
-
-- **Multi-Tenancy (Separação por Loja):** A execução possui injeção tardia (*lazy loading*) via `src.config.tenant` onde o argparse carrega o arquivo `.env.<nome_da_loja>` apenas durante runtime via CLI request. As importações de pacotes posteriores são expostas baseadas nas variáveis de tal tenant globalmente.
-- **Padrão Singleton:** Empregado na camada do Banco (`database.py`), o pool de conexão do SQLAlchemy usa um estado estático para instanciar a Engine (`_engine`) única por run minimizando overhead de latência por conexão, contendo salvaguardas de reset de escopo inter-tenant.
-- **DRY (Don't Repeat Yourself):** A agregação global centralizou algoritmos idênticos dentro de helpers (`src.config.utils.py`) resolvendo limpeza massiva de prefixos sujos de planilhas de SKU em único provedor, além do inicializador da aplicação (`src.config.tenant.py`).
-- **Star Schema Data Warehouse:** Modelagem denormalizada otimizada para Analytics usando blocos de *Dimensões* (Produtos e Clientes) atrelados referencialmente em *Tabelas Fato* iterativas (Fato Pedidos, Fato Custos e Publicações), mitigando anomalia de informações.
-- **Padrão Staging-to-Prod / Idempotência:** A camada de load previne chaves duplicadas. A injeção do DataFrame copia para tabelas sujas (Staging Table: `stg_`), cruzas as informações aplicando queries diretas transacionais `INSERT ... ON DUPLICATE KEY UPDATE` na tabela primária, validando integridade no DB de maneira unificada e por último, expurga a Staging Table na finalização do cursor.
+### Fatos (Transactions)
+- **`fato_pedido`**: Tabela cabeçalho. Detém os totais contábeis e status do pedido, porém **exclui** campos extensos/horizontais de taxas do canal.
+- **`fato_itens_pedido`**: Granularidade item a item. Mapeada ao `id_anuncio`.
+- **`fato_transacoes_financeiras`**: Representante do coração relacional do banco. Todas as taxas (Comissão, Frete, Serviços, Full) caem aqui num modelo simplificado contendo: `data`, `id_canal`, `id_pedido`, `categoria_custo` e `valor`.
+- **`fato_custos_ads`**: Absorve o extrato operacional de Custo por Clique e Impressões das APIs específicas de Marketing.
+- **`fato_custos_operacionais`**: Mantém custos extras mensais/avulsos independentes dos gateways.
 
 ---
 
-## 4. Estrutura de Diretórios (Folder Tree)
+## 3. Arquitetura de Software (Design Patterns)
+
+O projeto base da camada de transformação funciona fundamentado no padrão **Adapter Pattern**. A necessidade foi enxergada para apartar a volatilidade das rotas das APIs de Marketplaces.
+
+* `src/transform/adapters/base_adapter.py`: A nossa interface Abstrata de Contrato. Nenhuma classe interage com as tabelas de destino (DataFrames do banco) a não ser que apliquem a arquitetura de listas dicionárias exigida por este Base.
+* `MercadoLivreAdapter` e `ShopeeAdapter`: Acoplam as regras sujas do processamento, conversão de Unix timestamp, Unpivot local, identificador canônico `id_canal` e consolida a compatibilidade exigida e limpa para o `data_processor.py`. 
+
+---
+
+## 4. Fluxo do Pipeline ETL
+
+A Orquestração e as etapas atômicas fluem unicamente partindo do executor `main.py`:
+
+1. **Extract**: `main` aciona a API de destino (`ShopeeClient` ou `Meli`). Toda autoria via HMAC-SHA256 ou Tokens de Acesso se encerra em src/extract/*. Uma lista bruta de JSONs cruos é levantada em memória.
+2. **Transform (`data_processor.py`)**: Uma orquestração aciona as invocações `.padronizar_...` do adaptador pertencente à carga levantada. Modela os retornos preenchendo todos os 4 Data Frames base: *Pedidos, Transações, Itens, Anúncios*.
+3. **Load (`database.py`)**: Sub-processo de carga com proteção ACID `with engine.begin()`. Operamos Upsert (`INSERT ON DUPLICATE KEY UPDATE`) nas referências de topo, enquanto utilizamos Deleção Radically Idempotente Baseada no `id_pedido` para limpar e atualizar instâncias da fato Itens ou Financeiras e não saturar em cascata o banco relacional.
+4. **Sub-Workers Standalone**: Paralelamente, processadores engajados via `run_..._update.py` sobem na memória preenchendo os esquemas paralelos de Ads/Performance e Operacional.
+
+---
+
+## 5. Estrutura de Pastas
 
 ```text
-data_mercadoLivre/
-├── main.py                     # Entrypoint principal do pipeline
-├── .env.example                # Template de configuração e doc root
-├── .gitignore                  # Políticas restritas de versionamento local
-├── scripts/
-│   └── batch_cost_update.py    # Atualizações stand-alones avulsas em banco
+├── main.py                          # Orquestrador central
+├── .env                             # Env vars de produção do tenant
 ├── src/
-│   ├── config/                 # Lida com o núcleo base e settings globais
-│   │   ├── settings.py         # Declaração tardia estática das keys do sistema
-│   │   ├── tenant.py           # Valida inputs e vincula a inicialização na loja certa
-│   │   └── utils.py            # Helpers gerais e normalização (SKUs)
-│   ├── extract/                # Lida com conexões ativas de API  REST e planilhas
-│   │   ├── local_data.py       # Leitores de planilhas e tratativas primitivas
-│   │   ├── meli_client.py      # Agente de consumo/auth de rotas do Mercado Livre
-│   │   └── shopee_client.py    # Agente de HMAC auth/assinatura para Shopee Seller API
-│   ├── jobs/                   # Fluxos agregadores em batches
-│   │   ├── run_ads_update.py   # Lida com publicidade (PADS) focado na timeline retroativa 
-│   │   └── run_costs_update.py # Conector focado em contas a pagar (Full/Reembolso)
-│   ├── load/                   # Lida com Queries MySQL puras
-│   │   └── database.py         # Construção tabelas (CREATE), Singleton Pool e Upsert
-│   └── transform/              # Lida com Pandas e Modelagem Fato/Dim
-│       └── data_processor.py   # Lida com tipagem, preenchimento base e joins Dataframes
-└── material/                   # Repositório de arquivos de input manuais offline 
-    └── produtos_custo.xlsx
+│   ├── config/                      # Globais de credencial e auth
+│   ├── extract/
+│   │   ├── shopee_client.py         # Conector Hmac/API multi-modulo shopee
+│   │   └── ...                      # Demais conexões brutas
+│   ├── transform/
+│   │   ├── adapters/                # ADAPTER PATTERN CORE
+│   │   │   ├── base_adapter.py      # Abstract Interface
+│   │   │   ├── mercado_livre_adapter.py
+│   │   │   └── shopee_adapter.py
+│   │   └── data_processor.py        # Gateway central de orquestração dos adapters
+│   ├── load/
+│   │   └── database.py              # DDL explícitos e DML (Upserts, Creates)
+│   └── jobs/                        # Filas Standalones (Ex: Ads, Custos)
+└── ARCHITECTURE.md                  # Este documento
 ```
 
 ---
 
-## 5. Fluxo de Dados (Data Flow)
+## 6. Guia de Expansão: Adicionando um Novo Marketplace (Ex: Amazon)
 
-O ciclo de vida principal de processamento de informações roda a partir da chamada de orquestração:
+Implementamos um padrão plug-and-play. Quando entrar um novo canal, siga as etapas abaixo, as chances de impacto colateral nas tabelas antigas passam a ser 0!
 
-1. **Gatilho Inicial**: O `main.py` roda com uma flag de requisição (ex: `--loja prohair`).
-2. **Contextualização Setup**: A rotina `configurar_ambiente()` invoca o path correspondente carregando variáveis ocultas do DB e Auth (`.env.prohair`), populando todo o `src.config.settings`.
-3. **Extração API (Extract)**: Módulos como `meli_client.py` injetam Autorizações Bearer com checagem de timeout nos endpoints para varrer todos os JSONs em blocos retroativos da operação na collection final de Pedidos.
-4. **Mutação Multidimensional (Transform)**: Lida com vetores cruzados. `data_processor.py` fraciona os dicionários de ordens, isola Clientes na sua dimensão unificando identificadores e separa em fatias o modelo Fato de itens de acordo com as SKU base vindas de planilhas importadas de inventário via utilitários locais. Adiciona parâmetros nativos como `origem_venda`.
-5. **Carga Segregada Transacional (Load)**: Cada vetor de Dataframe limpo usa de tabelas espelhos temporárias via biblioteca local (*sqlalchemy to_sql stg_*). Seguidamente aciona *statements SQL Update on Duplicate Keys*, forçando atualização incremental nos Custos Atrelados aos Skus baseados nos preenchimento originais sem truncamento da tabela real.
-6. O pipeline reporta métricas da transação fechando o ambiente com isolamento lógico protegido para a próxima iteração.
+**Passo 1: Banco de Dados**
+1. Atualize a tabela relacional mapeada. Adicione `3 = Amazon` na sua representação ou insira na base `dim_canal_venda`.
 
----
+**Passo 2: Extrato (`src/extract/amazon_client.py`)**
+1. Crie o cliente para interagir com SP-API e monte funções que devolvam estritamente Listas/Dicts Python.
 
-## 6. Segurança e Configuração (Security & Setup)
+**Passo 3: Transformação (`src/transform/adapters/amazon_adapter.py`)**
+1. Crie o arquivo baseando-se no import `from .base_adapter import BaseMarketplaceAdapter`.
+2. Herde a base, e crie os 4 métodos obrigatórios: `padronizar_pedidos`, `padronizar_itens`, `padronizar_transacoes`, `padronizar_anuncios`.
+3. Certifique-se que o construtor invoque internamente `self.id_canal = 3`. 
+4. Lembrete: Em `padronizar_transacoes`, aplique um Unpivot (pegue dezenas de taxas devolvidas e as converta em dicionários listados com a key `"categoria_custo": tipo_taxa`).
 
-A segurança Multi-Tenant é garantida através dos seguintes controles arquitetônicos:
+**Passo 4: Integração de Núcleo (`src/transform/data_processor.py`)**
+1. Exponha o seu Adaptador em uma função envelope como `processar_pedidos_amazon_v2(dados_brutos)` devolvendo um Dicionário de DataFrames. (Mesmo padrão visto nas V2 atuais).
 
-- **Tokens Ignorados:** Os repositórios do Git operam bloqueios totais coringa (`*`) contra os artefatos `tokens_meli_*.json`, `.env*` e demais caches confidenciais, assegurando o vazamento nulo das chaves criptográficas OAuth trocadas pela API.
-- **Validações Antecipadas:** Falta de credenciais obrigatórias não gera warnings silenciosos e sim exceptions explícitas no motor (`ValueError`, detecção restritiva os.getenv), travando imediatamente a execução sistêmica.
-- **Log Sanitation:** Ausência total de logs base contendo variáveis sensíveis do cliente e/ou fragmentos f-strings vazados das exceptions do conector que acidentalmente exibiria senhas.
-- **Persistência Volátil Isolada:** O Tenant X nunca pode interferir nos blocos de autenticação HTTP ou Database do Tenant Y devido à rotina lazy initializers da Engine referenciando o DB e os caminhos de persistência na raiz.
+**Passo 5: Orquestrador (`main.py`)**
+1. Instancie sua lógica envolta nas checagens if condicional. Obtenha os 4 dataframes pelo `dict.get()`.
+2. Acione e descarregue os DataFrames no banco via `salvar_no_banco()`.
+
+Pronto! Ao final destes passos genéricos a estrutura Multi-Channel expandirá seus horizontes atestando os princípios Open-Closed (S**O**LID) aplicados localmente!

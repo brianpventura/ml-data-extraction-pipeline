@@ -17,6 +17,7 @@ from typing import Any
 import pandas as pd
 
 from src.config.utils import normalizar_sku
+from src.transform.adapters.mercado_livre_adapter import MercadoLivreAdapter
 from src.transform.adapters.shopee_adapter import ShopeeAdapter
 
 logger = logging.getLogger(__name__)
@@ -26,121 +27,48 @@ logger = logging.getLogger(__name__)
 # Main transformation — Star Schema
 # ---------------------------------------------------------------------------
 
-def processar_pedidos(
-    dados_brutos: list[dict[str, Any]],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Transforms raw API orders into 4 DataFrames following the
-    Star Schema model (Customers, Products, Orders, Items).
+def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
+    """Parses Mercado Livre API orders into Star Schema DataFrames via Adapter.
 
     Args:
-        dados_brutos: List of dictionaries from the marketplace API,
-            already enriched with the ``custo_frete_real`` field.
+        dados_brutos: List of dictionary records.
 
-        Returns:
-        Tuple of 4 DataFrames:
-        ``(df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido)``
+    Returns:
+        Dict mapped to 4 DataFrames.
     """
-    clientes: list[dict] = []
-    produtos: list[dict] = []
-    pedidos: list[dict] = []
-    itens_pedido: list[dict] = []
+    if not dados_brutos:
+        return {
+            "df_fato_pedido": pd.DataFrame(),
+            "df_fato_itens": pd.DataFrame(),
+            "df_fato_transacoes": pd.DataFrame(),
+            "df_dim_anuncios": pd.DataFrame()
+        }
 
-    for pedido in dados_brutos:
-        id_pedido = pedido.get("id")
-        data_criacao = pedido.get("date_created")
-        status = pedido.get("status")
-        total_pago_comprador = pedido.get("paid_amount", 0.0)
-        total_produtos = pedido.get("total_amount", 0.0)
+    adapter = MercadoLivreAdapter(raw_data=dados_brutos, id_canal=1)
 
-        # --- 1. Customer (Dimension) ---
-        comprador = pedido.get("buyer", {})
-        id_cliente = comprador.get("id")
-        nickname = comprador.get("nickname", "")
-
-        clientes.append(
-            {
-                "id_cliente": id_cliente,
-                "nickname": nickname,
-                "nome_completo": "",  # Default placeholder (omitted by source).
-            }
-        )
-
-        # --- 2. Shipping cost (higher of financial extract vs. shipment) ---
-        frete_financeiro = _extrair_frete_financeiro(pedido)
-        frete_multiget = pedido.get("custo_frete_real", 0.0)
-        frete_final = max(frete_financeiro, frete_multiget)
-
-        # --- 3. Order (Fact Header) ---
-        pedidos.append(
-            {
-                "id_pedido": id_pedido,
-                "id_cliente": id_cliente,
-                "data_criacao": data_criacao,
-                "status": status,
-                "valor_produtos": total_produtos,
-                "custo_frete": frete_final,
-                "total_pago_comprador": total_pago_comprador,
-                "origem_venda": "MERCADO_LIVRE",
-                "taxa_comissao": 0.0,
-                "taxa_transacao": 0.0,
-                "taxa_servico": 0.0,
-                "custo_full_shopee": 0.0,
-                "custo_afiliados": 0.0,
-            }
-        )
-
-        # --- 4. Items and Products (Dimension + Fact Line) ---
-        for item in pedido.get("order_items", []):
-            produto = item.get("item", {})
-            id_produto = produto.get("id")
-
-            produtos.append(
-                {
-                    "id_produto": id_produto,
-                    "sku": produto.get("seller_sku", ""),
-                    "descricao": produto.get("title", ""),
-                    "custo_unitario": 0.00,  # Populated via cost merge
-                }
-            )
-
-            itens_pedido.append(
-                {
-                    "id_pedido": id_pedido,
-                    "id_produto": id_produto,
-                    "quantidade": item.get("quantity", 1),
-                    "preco_unitario": item.get("unit_price", 0.0),
-                    "taxa_venda": item.get("sale_fee", 0.0),
-                    "origem_venda": "MERCADO_LIVRE",
-                }
-            )
-
-    # Convert to DataFrames
-    df_dim_cliente = pd.DataFrame(clientes)
-    df_dim_produto = pd.DataFrame(produtos)
-    df_fato_pedido = pd.DataFrame(pedidos)
-    df_fato_itens_pedido = pd.DataFrame(itens_pedido)
-
-    # Deduplicate dimensions (keep most recent record)
-    if not df_dim_cliente.empty:
-        df_dim_cliente = df_dim_cliente.drop_duplicates(
-            subset=["id_cliente"], keep="last"
-        )
-
-    if not df_dim_produto.empty:
-        df_dim_produto = df_dim_produto.drop_duplicates(
-            subset=["id_produto"], keep="last"
-        )
+    df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
+    df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
+    df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
+    
+    df_dim_anuncios = pd.DataFrame(adapter.padronizar_anuncios())
+    if not df_dim_anuncios.empty:
+        df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
 
     logger.info(
-        "Processamento concluído — Clientes: %d | Produtos: %d | "
-        "Pedidos: %d | Itens: %d",
-        len(df_dim_cliente),
-        len(df_dim_produto),
+        "Processamento ML (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
+        "Transações Fin: %d | Anúncios: %d",
         len(df_fato_pedido),
-        len(df_fato_itens_pedido),
+        len(df_fato_itens),
+        len(df_fato_transacoes),
+        len(df_dim_anuncios),
     )
 
-    return df_dim_cliente, df_dim_produto, df_fato_pedido, df_fato_itens_pedido
+    return {
+        "df_fato_pedido": df_fato_pedido,
+        "df_fato_itens": df_fato_itens,
+        "df_fato_transacoes": df_fato_transacoes,
+        "df_dim_anuncios": df_dim_anuncios
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -286,24 +214,3 @@ def _unix_para_datetime(ts: int) -> str:
         ).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, OSError):
         return ""
-
-def _extrair_frete_financeiro(pedido: dict[str, Any]) -> float:
-    """Extracts shipping cost embedded in the order's financial fees.
-
-    The marketplace may report shipping cost under the
-    ``shipping_fee`` or ``shipping_cost`` types within ``fee_details``.
-
-    Args:
-        pedido: Raw order dictionary from the API.
-
-    Returns:
-        Financial shipping cost as a float.
-    """
-    tarifas = pedido.get("fee_details", [])
-    frete = 0.0
-
-    for tarifa in tarifas:
-        if tarifa.get("type") in ("shipping_fee", "shipping_cost"):
-            frete += tarifa.get("amount", 0.0)
-
-    return frete

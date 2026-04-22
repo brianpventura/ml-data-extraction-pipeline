@@ -19,15 +19,10 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-# ---------------------------------------------------------------------------
-# Paths — resolved absolutely from the project root
-# ---------------------------------------------------------------------------
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
-"""Absolute path to the project root directory."""
+from src.config.paths import PROJECT_ROOT, CUSTOS_XLSX, CUSTOS_JSON
 
-# Token path is resolved dynamically via _get_tokens_path()
-_CUSTOS_PATH: Path = PROJECT_ROOT / "material" / "custo.xlsx"
-_CUSTOS_JSON_PATH: Path = PROJECT_ROOT / "material" / "produtos_custo.json"
+_CUSTOS_PATH: Path = CUSTOS_XLSX
+_CUSTOS_JSON_PATH: Path = CUSTOS_JSON
 
 logger = logging.getLogger(__name__)
 

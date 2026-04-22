@@ -41,25 +41,24 @@ The pipeline follows the classic **ETL** pattern with a Star Schema data model:
 ```text
 /
 ├── main.py                          # Pipeline orchestrator (entry point)
+├── config/
+│   ├── env/                         # Tenant-specific .env files
+│   └── json/                        # Persisted OAuth tokens
 ├── src/
 │   ├── config/
-│   │   └── settings.py              # Centralized configuration & constants
+│   │   ├── settings.py              # Configuration constants
+│   │   ├── tenant.py                # Environment resolver
+│   │   └── paths.py                 # Centralized path helper
 │   ├── extract/
-│   │   ├── meli_client.py    # OAuth + Orders + Shipping API client
-│   │   └── local_data.py            # Excel / JSON cost file readers
+│   │   ├── meli_client.py           # ML API client
+│   │   └── shopee_client.py         # Shopee API client
 │   ├── transform/
-│   │   └── data_processor.py        # Star Schema + cost enrichment
-│   ├── load/
-│   │   └── database.py              # MySQL DDL, upserts, staging tables
-│   └── jobs/
-│       ├── run_ads_update.py        # Advertising metrics extraction job
-│       └── run_costs_update.py      # Operational costs extraction job
+│   │   └── data_processor.py        # Star Schema logic
+│   └── load/
+│       └── database.py              # MySQL layer
 ├── scripts/
-│   └── batch_cost_update.py         # Standalone batch cost update utility
-├── tests/                           # Unit tests (pytest)
-├── material/                        # Local data files (not tracked)
-├── dashboard/                       # Power BI files (not tracked)
-├── .env.example                     # Environment variables template
+├── material/                        # Local Excel/JSON cost data
+├── tests/
 ├── .gitignore
 └── requirements.txt
 ```
@@ -103,8 +102,8 @@ pip install -r requirements.txt
 ### 4. Configure environment variables
 
 ```bash
-cp .env.example .env
-# Edit .env with your actual credentials
+cp config/env/.env.example config/env/.env.prohair
+# Edit config/env/.env.prohair with your actual credentials
 ```
 
 ### 5. Run the pipeline

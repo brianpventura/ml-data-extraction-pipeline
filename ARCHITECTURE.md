@@ -50,21 +50,22 @@ A Orquestração e as etapas atômicas fluem unicamente partindo do executor `ma
 
 ```text
 ├── main.py                          # Orquestrador central
-├── .env                             # Env vars de produção do tenant
+├── config/
+│   ├── env/                         # Arquivos .env por loja (Tenant)
+│   └── json/                        # Tokens OAuth persistidos
 ├── src/
 │   ├── config/                      # Globais de credencial e auth
+│   │   ├── settings.py              # Constantes e carregamento .env
+│   │   ├── tenant.py                # Resolvedor de ambiente (CLI/Input)
+│   │   └── paths.py                 # Helper centralizado de caminhos
 │   ├── extract/
 │   │   ├── shopee_client.py         # Conector Hmac/API multi-modulo shopee
 │   │   └── ...                      # Demais conexões brutas
 │   ├── transform/
 │   │   ├── adapters/                # ADAPTER PATTERN CORE
-│   │   │   ├── base_adapter.py      # Abstract Interface
-│   │   │   ├── mercado_livre_adapter.py
-│   │   │   └── shopee_adapter.py
-│   │   └── data_processor.py        # Gateway central de orquestração dos adapters
-│   ├── load/
-│   │   └── database.py              # DDL explícitos e DML (Upserts, Creates)
-│   └── jobs/                        # Filas Standalones (Ex: Ads, Custos)
+│   │   └── data_processor.py        # Orquestração dos adapters
+│   └── load/
+│       └── database.py              # Camada de banco de dados
 └── ARCHITECTURE.md                  # Este documento
 ```
 

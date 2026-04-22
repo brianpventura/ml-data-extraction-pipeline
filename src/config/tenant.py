@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from typing import Optional
+from src.config.paths import ENV_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def configurar_ambiente(
         sys.exit(1)
 
     # --- Locate and validate .env file ---
-    env_file = f".env.{nome_loja}"
+    env_file = ENV_DIR / f".env.{nome_loja}"
 
     if not os.path.exists(env_file):
         print(f"\n[ERRO] Arquivo '{env_file}' nao encontrado.")

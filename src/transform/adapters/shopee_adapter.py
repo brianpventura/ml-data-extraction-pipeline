@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -55,7 +54,7 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
             # Calcular valor dos produtos iterando sobre a lista de itens
             item_list = pedido.get("item_list", [])
             valor_produtos = sum(
-                int(item.get("model_quantity_purchased", 1)) * float(item.get("model_discounted_price", 0.0))
+                int(item.get("model_quantity_purchased") or 1) * float(item.get("model_discounted_price") or 0.0)
                 for item in item_list
             )
             
@@ -83,8 +82,8 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
                 itens.append({
                     "id_pedido": order_sn,
                     "id_anuncio": str(item.get("item_id", "")),
-                    "quantidade": int(item.get("model_quantity_purchased", 1)),
-                    "preco_unitario": float(item.get("model_discounted_price", 0.0))
+                    "quantidade": int(item.get("model_quantity_purchased") or 1),
+                    "preco_unitario": float(item.get("model_discounted_price") or 0.0)
                 })
         return itens
 
@@ -132,6 +131,8 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
                 anuncios.append({
                     "id_anuncio": str(item.get("item_id", "")),
                     "id_canal": self.id_canal,
-                    "sku": item.get("item_sku", "")
+                    "sku": item.get("item_sku", ""),
+                    "titulo_anuncio": item.get("item_name", ""),
+                    "tipo_anuncio": ""
                 })
         return anuncios

@@ -168,13 +168,10 @@ def criar_tabelas(engine: Engine) -> None:
                     id_registro INT AUTO_INCREMENT PRIMARY KEY,
                     id_pedido VARCHAR(50) NOT NULL,
                     id_anuncio VARCHAR(50) NOT NULL,
-                    id_produto VARCHAR(50),
                     quantidade INT NOT NULL,
                     preco_unitario DECIMAL(10,2) NOT NULL,
-                    taxa_venda DECIMAL(10,2) DEFAULT 0.00,
-                    origem_venda VARCHAR(100),
                     FOREIGN KEY (id_pedido) REFERENCES fato_pedido(id_pedido),
-                    FOREIGN KEY (id_produto) REFERENCES dim_produto(id_produto),
+                    FOREIGN KEY (id_anuncio) REFERENCES dim_anuncio_marketplace(id_anuncio),
                     UNIQUE KEY unique_item (id_pedido, id_anuncio)
                 );
             """)
@@ -337,11 +334,12 @@ def salvar_no_banco(
                 
                 # Delete existing related rows for idempotent replace
                 if pedidos_ids:
-                    # Parameterized batch deletion 
-                    placeholders = ", ".join([f"'{str(pid)}'" for pid in pedidos_ids])
+                    # Parameterized batch deletion (safe against SQL injection)
+                    placeholders = ", ".join([":p" + str(i) for i in range(len(pedidos_ids))])
+                    params = {"p" + str(i): str(pid) for i, pid in enumerate(pedidos_ids)}
                     
-                    conn.execute(text(f"DELETE FROM fato_itens_pedido WHERE id_pedido IN ({placeholders})"))
-                    conn.execute(text(f"DELETE FROM fato_transacoes_financeiras WHERE id_pedido IN ({placeholders})"))
+                    conn.execute(text(f"DELETE FROM fato_itens_pedido WHERE id_pedido IN ({placeholders})"), params)
+                    conn.execute(text(f"DELETE FROM fato_transacoes_financeiras WHERE id_pedido IN ({placeholders})"), params)
                     
             if not df_fato_itens_pedido.empty:
                 df_fato_itens_pedido.to_sql(
@@ -379,9 +377,6 @@ def salvar_no_banco(
                 logger.info(
                     "Insert Transações Financeiras: %d registros inseridos de forma limpa.",
                     len(df_fato_transacoes),
-                )
-                logger.info(
-                    "Upsert Itens: %d registros processados.", len(df_fato_itens_pedido)
                 )
 
     except Exception as exc:

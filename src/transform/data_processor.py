@@ -48,7 +48,14 @@ def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
     adapter = MercadoLivreAdapter(raw_data=dados_brutos, id_canal=1)
 
     df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
+    
     df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
+    if not df_fato_itens.empty:
+        df_fato_itens = df_fato_itens.groupby(['id_pedido', 'id_anuncio'], as_index=False).agg({
+            'quantidade': 'sum',
+            'preco_unitario': 'max'
+        })
+        
     df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
     
     df_dim_anuncios = pd.DataFrame(adapter.padronizar_anuncios())
@@ -175,7 +182,14 @@ def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
     adapter = ShopeeAdapter(raw_data=dados_brutos, id_canal=2)
 
     df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
+    
     df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
+    if not df_fato_itens.empty:
+        df_fato_itens = df_fato_itens.groupby(['id_pedido', 'id_anuncio'], as_index=False).agg({
+            'quantidade': 'sum',
+            'preco_unitario': 'max'
+        })
+        
     df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
     
     # Processa dim_anuncios e dropa duplicatas (garante id único)

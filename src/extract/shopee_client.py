@@ -22,7 +22,9 @@ import datetime
 import hashlib
 import hmac
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 from urllib.parse import urlencode
 
@@ -491,6 +493,14 @@ class ShopeeClient:
                         self.obter_token_acesso()
                         continue
 
+                    if resp.status_code == 429:
+                        retry_after = int(
+                            resp.headers.get("Retry-After", RATE_LIMIT_BACKOFF_SECONDS)
+                        )
+                        tqdm.write(f"   [!] Rate limit Shopee (429). Aguardando {retry_after}s...")
+                        time.sleep(retry_after)
+                        continue
+
                     tentativas_token = 0
 
                     if erro:
@@ -587,6 +597,14 @@ class ShopeeClient:
                         )
                         dados = resp.json()
 
+                    if resp.status_code == 429:
+                        retry_after = int(
+                            resp.headers.get("Retry-After", RATE_LIMIT_BACKOFF_SECONDS)
+                        )
+                        tqdm.write(f"   [!] Rate limit Shopee detail (429). Aguardando {retry_after}s...")
+                        time.sleep(retry_after)
+                        continue
+
                     tentativas_token = 0
 
                     if dados.get("error"):
@@ -621,30 +639,12 @@ class ShopeeClient:
         finally:
             pbar.close()
 
-        # --- Step 3: Financial enrichment via Escrow ---
+        # --- Step 3: Financial enrichment via Escrow (parallel) ---
         logger.info(
             "Shopee: Enriquecendo %d pedidos com dados financeiros (escrow)...",
             len(todos_pedidos),
         )
-
-        pbar_escrow = tqdm(
-            total=len(todos_pedidos),
-            desc="Shopee Escrow Detail",
-            unit="ped",
-            colour="magenta",
-        )
-
-        try:
-            for pedido in todos_pedidos:
-                sn = pedido.get("order_sn", "")
-                if sn:
-                    pedido["escrow_detail"] = self._buscar_detalhes_escrow(sn)
-                else:
-                    pedido["escrow_detail"] = {}
-                pbar_escrow.update(1)
-                time.sleep(THROTTLE_DELAY_SECONDS)
-        finally:
-            pbar_escrow.close()
+        todos_pedidos = self._enriquecer_escrow_paralelo(todos_pedidos)
 
         logger.info(
             "Shopee: Extracao completa. %d pedidos com detalhes e escrow obtidos.",
@@ -741,6 +741,55 @@ class ShopeeClient:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _enriquecer_escrow_paralelo(
+        self, todos_pedidos: list, max_workers: int = 5
+    ) -> list:
+        """Fetches escrow details in parallel using a thread pool.
+
+        Uses a Semaphore to cap concurrent requests to ``max_workers``
+        so the Shopee rate limit is respected. Each worker also sleeps
+        ``THROTTLE_DELAY_SECONDS`` after its request.
+
+        Args:
+            todos_pedidos: List of order dicts to enrich in-place.
+            max_workers: Maximum number of simultaneous HTTP requests.
+                         Default of 5 gives ~5x speedup without
+                         exceeding Shopee's typical rate limits.
+
+        Returns:
+            The same list with ``escrow_detail`` populated on each item.
+        """
+        _semaphore = threading.Semaphore(max_workers)
+
+        def _buscar_com_throttle(pedido: dict) -> None:
+            """Thread worker: acquires semaphore, fetches, releases."""
+            with _semaphore:
+                sn = pedido.get("order_sn", "")
+                pedido["escrow_detail"] = (
+                    self._buscar_detalhes_escrow(sn) if sn else {}
+                )
+                time.sleep(THROTTLE_DELAY_SECONDS)
+
+        pbar = tqdm(
+            total=len(todos_pedidos),
+            desc="Shopee Escrow Detail",
+            unit="ped",
+            colour="magenta",
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_buscar_com_throttle, p): p
+                    for p in todos_pedidos
+                }
+                for future in as_completed(futures):
+                    future.result()  # propagate any worker exception
+                    pbar.update(1)
+        finally:
+            pbar.close()
+
+        return todos_pedidos
 
     def _buscar_detalhes_escrow(self, order_sn: str) -> dict:
         """Fetches the financial escrow breakdown for a single order.

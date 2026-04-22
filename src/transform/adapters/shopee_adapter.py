@@ -1,7 +1,14 @@
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base_adapter import BaseMarketplaceAdapter
+
+
+def _truncar(valor: Optional[str], limite: int) -> str:
+    """Truncates a string to fit a VARCHAR column safely."""
+    if not valor:
+        return ""
+    return str(valor)[:limite]
 
 class ShopeeAdapter(BaseMarketplaceAdapter):
     """
@@ -27,7 +34,7 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
             if id_cliente != 0:
                 clientes.append({
                     "id_cliente": id_cliente,
-                    "nickname": pedido.get("buyer_username", ""),
+                    "nickname": _truncar(pedido.get("buyer_username", ""), 100),
                     "nome_completo": ""
                 })
         return clientes
@@ -131,8 +138,8 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
                 anuncios.append({
                     "id_anuncio": str(item.get("item_id", "")),
                     "id_canal": self.id_canal,
-                    "sku": item.get("item_sku", ""),
-                    "titulo_anuncio": item.get("item_name", ""),
+                    "sku": _truncar(item.get("item_sku", ""), 100),
+                    "titulo_anuncio": _truncar(item.get("item_name", ""), 255),
                     "tipo_anuncio": ""
                 })
         return anuncios

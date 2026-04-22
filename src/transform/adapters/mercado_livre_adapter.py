@@ -1,6 +1,13 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base_adapter import BaseMarketplaceAdapter
+
+
+def _truncar(valor: Optional[str], limite: int) -> str:
+    """Truncates a string to fit a VARCHAR column safely."""
+    if not valor:
+        return ""
+    return str(valor)[:limite]
 
 class MercadoLivreAdapter(BaseMarketplaceAdapter):
     """
@@ -15,7 +22,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
             if id_cliente != 0:
                 clientes.append({
                     "id_cliente": id_cliente,
-                    "nickname": comprador.get("nickname", ""),
+                    "nickname": _truncar(comprador.get("nickname", ""), 100),
                     "nome_completo": ""
                 })
         return clientes
@@ -121,8 +128,8 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
                 anuncios.append({
                     "id_anuncio": str(produto.get("id", "")),
                     "id_canal": self.id_canal,
-                    "sku": produto.get("seller_sku", ""),
-                    "titulo_anuncio": produto.get("title", ""),
-                    "tipo_anuncio": produto.get("listing_type_id", "")
+                    "sku": _truncar(produto.get("seller_sku", ""), 100),
+                    "titulo_anuncio": _truncar(produto.get("title", ""), 255),
+                    "tipo_anuncio": _truncar(produto.get("listing_type_id", ""), 50)
                 })
         return anuncios

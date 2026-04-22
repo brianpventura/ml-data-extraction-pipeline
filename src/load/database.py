@@ -246,7 +246,8 @@ def salvar_no_banco(
             # --- 1. UPSERT CLIENTES ---
             if not df_dim_cliente.empty:
                 df_dim_cliente.to_sql(
-                    "stg_clientes", con=conn, if_exists="replace", index=False
+                    "stg_clientes", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 conn.execute(
                     text("""
@@ -266,7 +267,8 @@ def salvar_no_banco(
             # --- 2. UPSERT PRODUTOS ---
             if not df_dim_produto.empty:
                 df_dim_produto.to_sql(
-                    "stg_produtos", con=conn, if_exists="replace", index=False
+                    "stg_produtos", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 conn.execute(
                     text("""
@@ -286,7 +288,8 @@ def salvar_no_banco(
             # --- 3. UPSERT ANÚNCIOS ---
             if not df_dim_anuncios.empty:
                 df_dim_anuncios.to_sql(
-                    "stg_anuncios", con=conn, if_exists="replace", index=False
+                    "stg_anuncios", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 conn.execute(
                     text("""
@@ -307,7 +310,8 @@ def salvar_no_banco(
             # --- 4. UPSERT PEDIDOS ---
             if not df_fato_pedido.empty:
                 df_fato_pedido.to_sql(
-                    "stg_pedidos", con=conn, if_exists="replace", index=False
+                    "stg_pedidos", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 conn.execute(
                     text("""
@@ -343,7 +347,8 @@ def salvar_no_banco(
                     
             if not df_fato_itens_pedido.empty:
                 df_fato_itens_pedido.to_sql(
-                    "stg_itens", con=conn, if_exists="replace", index=False
+                    "stg_itens", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 # Ensure we only refer to columns actually being output by the new adapter
                 conn.execute(
@@ -362,7 +367,8 @@ def salvar_no_banco(
                 
             if not df_fato_transacoes.empty:
                 df_fato_transacoes.to_sql(
-                    "stg_transacoes", con=conn, if_exists="replace", index=False
+                    "stg_transacoes", con=conn, if_exists="replace",
+                    index=False, chunksize=500, method="multi"
                 )
                 # Using columns projection to avoid PK issues
                 conn.execute(

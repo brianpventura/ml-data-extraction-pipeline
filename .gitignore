@@ -1,4 +1,9 @@
 # --- Ambiente e Credenciais (Critico) ---
+config/env/.env.prohair
+config/env/.env.progrowth
+config/json/tokens_meli_*.json
+config/json/tokens_shopee_*.json
+# Padrões legados (segurança extra)
 .env.prohair
 .env.progrowth
 tokens_meli_*.json

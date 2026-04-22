@@ -224,6 +224,16 @@ class MercadoLivreClient:
                             offset = 0
                         else:
                             offset += _PAGE_LIMIT
+                    elif response.status_code == 429:
+                        retry_after = int(
+                            response.headers.get("Retry-After", RATE_LIMIT_BACKOFF_SECONDS)
+                        )
+                        tqdm.write(
+                            f"[!] Rate limit atingido (HTTP 429). "
+                            f"Aguardando {retry_after}s antes de tentar novamente..."
+                        )
+                        time.sleep(retry_after)
+                        continue
                     else:
                         raise RuntimeError(
                             f"Erro na API (offset {offset}, "

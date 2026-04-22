@@ -35,8 +35,8 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
                 "id_cliente": id_cliente,
                 "data_criacao": pedido.get("date_created", ""),
                 "status": pedido.get("status", ""),
-                "valor_produtos": float(pedido.get("total_amount", 0.0)),
-                "total_pago_comprador": float(pedido.get("paid_amount", 0.0)),
+                "valor_produtos": float(pedido.get("total_amount") or 0.0),
+                "total_pago_comprador": float(pedido.get("paid_amount") or 0.0),
                 "origem_venda": "MERCADO LIVRE"
             })
             
@@ -51,8 +51,8 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
                 itens.append({
                     "id_pedido": id_pedido,
                     "id_anuncio": str(produto.get("id", "")),
-                    "quantidade": int(item.get("quantity", 1)),
-                    "preco_unitario": float(item.get("unit_price", 0.0))
+                    "quantidade": int(item.get("quantity") or 1),
+                    "preco_unitario": float(item.get("unit_price") or 0.0)
                 })
         return itens
 
@@ -70,7 +70,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
             # --- 1. Comissão de Venda (Extraída dos Itens) ---
             comissao = 0.0
             for item in pedido.get("order_items", []):
-                comissao += float(item.get("sale_fee", 0.0))
+                comissao += float(item.get("sale_fee") or 0.0)
                 
             if comissao != 0.0:
                 taxas["COMISSAO"] = comissao
@@ -81,7 +81,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
             
             for tarifa in pedido.get("fee_details", []):
                 tipo = tarifa.get("type", "")
-                amt = float(tarifa.get("amount", 0.0))
+                amt = float(tarifa.get("amount") or 0.0)
                 
                 if tipo in ("shipping_fee", "shipping_cost"):
                     frete_financeiro += amt
@@ -90,7 +90,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
                     outras_taxas[cat_nome] = outras_taxas.get(cat_nome, 0.0) + amt
 
             # Aplica MAX entre fee_details e envio separado
-            frete_multiget = float(pedido.get("custo_frete_real", 0.0))
+            frete_multiget = float(pedido.get("custo_frete_real") or 0.0)
             frete_final = max(frete_financeiro, frete_multiget)
             
             if frete_final != 0.0:

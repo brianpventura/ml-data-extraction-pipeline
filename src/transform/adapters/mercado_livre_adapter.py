@@ -17,14 +17,14 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
     def padronizar_clientes(self) -> List[Dict[str, Any]]:
         clientes = []
         for pedido in self.raw_data:
-            comprador = pedido.get("buyer", {})
+            comprador = pedido.get("buyer") or {}
             id_cliente = int(comprador.get("id")) if comprador.get("id") else 0
-            if id_cliente != 0:
-                clientes.append({
-                    "id_cliente": id_cliente,
-                    "nickname": _truncar(comprador.get("nickname", ""), 100),
-                    "nome_completo": ""
-                })
+            
+            clientes.append({
+                "id_cliente": id_cliente,
+                "nickname": _truncar(str(comprador.get("nickname") or "CLIENTE NÃO INFORMADO"), 100),
+                "nome_completo": ""
+            })
         return clientes
 
     def padronizar_pedidos(self) -> List[Dict[str, Any]]:
@@ -32,8 +32,7 @@ class MercadoLivreAdapter(BaseMarketplaceAdapter):
         for pedido in self.raw_data:
             id_pedido = str(pedido.get("id", ""))
             
-            comprador = pedido.get("buyer", {})
-            # ML buyer obj has 'id' which is an integer
+            comprador = pedido.get("buyer") or {}
             id_cliente = int(comprador.get("id")) if comprador.get("id") else 0
             
             pedidos.append({

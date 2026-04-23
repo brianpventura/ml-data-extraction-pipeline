@@ -31,12 +31,12 @@ class ShopeeAdapter(BaseMarketplaceAdapter):
         clientes = []
         for pedido in self.raw_data:
             id_cliente = int(pedido.get("buyer_user_id") or 0)
-            if id_cliente != 0:
-                clientes.append({
-                    "id_cliente": id_cliente,
-                    "nickname": _truncar(pedido.get("buyer_username", ""), 100),
-                    "nome_completo": ""
-                })
+            
+            clientes.append({
+                "id_cliente": id_cliente,
+                "nickname": _truncar(str(pedido.get("buyer_username") or "CLIENTE NÃO INFORMADO"), 100),
+                "nome_completo": ""
+            })
         return clientes
 
     def padronizar_pedidos(self) -> List[Dict[str, Any]]:

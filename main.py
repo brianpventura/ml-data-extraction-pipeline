@@ -102,37 +102,41 @@ def _despachar_modulo(
 
 
 def _resolver_periodo(escolha: str) -> tuple[
-    Optional[str], Optional[str], Optional[str], Optional[str], int
+    Optional[str], Optional[str], Optional[str], Optional[str], int, str
 ]:
-    """Resolves user input into (data_inicio_iso, data_fim_iso,
-    dt_inicio_str, dt_fim_str, dias)."""
-    from src.load.database import obter_ultima_data_pedido
+    """Resolves user input into (data_inicio, data_fim, dt_inicio_str,
+    dt_fim_str, dias, modo).
 
+    ``modo`` is one of ``intervalo`` | ``retroativo`` | ``incremental``
+    and tells the orchestrator how to compute the per-channel start
+    date.
+    """
     data_inicio: Optional[str] = None
     data_fim: Optional[str] = None
     dt_inicio_str: Optional[str] = None
     dt_fim_str: Optional[str] = None
     dias = 30
+    modo = "incremental"
 
     if "," in escolha:
+        modo = "intervalo"
         dt_inicio_str, dt_fim_str = (s.strip() for s in escolha.split(",", 1))
         data_inicio = f"{dt_inicio_str}T00:00:00.000-00:00"
         data_fim = f"{dt_fim_str}T23:59:59.000-00:00"
         logger.info("Modo Intervalo: %s ate %s.", dt_inicio_str, dt_fim_str)
 
     elif escolha.strip().isdigit():
+        modo = "retroativo"
         dias = int(escolha.strip())
         data_inicio = _calcular_data_retroativa(dias)
         logger.info("Modo Retroativo: ultimos %d dias.", dias)
 
     else:
-        data_inicio = obter_ultima_data_pedido()
-        if data_inicio:
-            logger.info("Modo Incremental: a partir de %s.", data_inicio)
-        else:
-            logger.info("Carga Historica: banco vazio. Puxando todo o historico.")
+        # Incremental: per-channel start date is computed inside the
+        # extraction loop using ``obter_ultima_data_pedido(id_canal)``.
+        logger.info("Modo Incremental: cada canal usara seu proprio cursor.")
 
-    return data_inicio, data_fim, dt_inicio_str, dt_fim_str, dias
+    return data_inicio, data_fim, dt_inicio_str, dt_fim_str, dias, modo
 
 
 # ---------------------------------------------------------------------------
@@ -143,13 +147,19 @@ def _executar_canal(
     spec,
     data_inicio: Optional[str],
     data_fim: Optional[str],
-) -> int:
+    modo: str,
+) -> tuple[int, Optional[pd.DataFrame]]:
     """Extracts + Transforms + Loads orders for ONE channel.
 
-    Returns the number of orders processed (0 if the channel is
-    optional and not configured for this tenant).
+    In ``incremental`` mode, ``data_inicio`` is recomputed per channel
+    from ``MAX(fato_pedido.data_criacao)`` filtered by ``id_canal``.
+
+    Returns:
+        Tuple ``(qtd_pedidos, df_dim_anuncios)``. The DataFrame is
+        returned so the orchestrator can consolidate it later into
+        ``dim_produto`` (a single cross-channel UPSERT).
     """
-    from src.load.database import salvar_no_banco
+    from src.load.database import obter_ultima_data_pedido, salvar_no_banco
     from src.transform.data_processor import processar_pelo_canal
 
     logger.info("[%s] Validando token...", spec.nome)
@@ -160,17 +170,31 @@ def _executar_canal(
         if spec.opcional:
             logger.info("[%s] nao configurado para esta loja (pulando): %s",
                         spec.nome, exc)
-            return 0
+            return 0, None
         raise
+
+    # --- Per-channel cursor for incremental mode ---
+    inicio_canal = data_inicio
+    if modo == "incremental":
+        inicio_canal = obter_ultima_data_pedido(id_canal=spec.id_canal)
+        if inicio_canal:
+            logger.info(
+                "[%s] Cursor incremental: a partir de %s.",
+                spec.nome, inicio_canal,
+            )
+        else:
+            logger.info(
+                "[%s] Sem historico no banco — carga completa.", spec.nome
+            )
 
     logger.info("[%s] Extraindo pedidos...", spec.nome)
     dados_brutos = client.buscar_todos_pedidos(
-        date_from=data_inicio, date_to=data_fim
+        date_from=inicio_canal, date_to=data_fim
     )
 
     if not dados_brutos:
         logger.info("[%s] Nenhum pedido novo no periodo.", spec.nome)
-        return 0
+        return 0, None
 
     logger.info("[%s] Transformando %d pedidos...", spec.nome, len(dados_brutos))
     resultados = processar_pelo_canal(spec, dados_brutos)
@@ -178,13 +202,13 @@ def _executar_canal(
     logger.info("[%s] Inserindo dados no MySQL...", spec.nome)
     salvar_no_banco(
         df_dim_cliente=resultados.get("df_dim_cliente"),
-        df_dim_produto=pd.DataFrame(),
+        df_dim_produto=pd.DataFrame(),  # populated cross-channel below
         df_fato_pedido=resultados.get("df_fato_pedido"),
         df_fato_itens_pedido=resultados.get("df_fato_itens"),
         df_dim_anuncios=resultados.get("df_dim_anuncios"),
         df_fato_transacoes=resultados.get("df_fato_transacoes"),
     )
-    return len(dados_brutos)
+    return len(dados_brutos), resultados.get("df_dim_anuncios")
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +219,8 @@ def executar_pipeline(nome_loja: str) -> None:
     """Executes the complete ETL pipeline for the given store."""
     # --- Lazy imports (settings already loaded by configurar_ambiente) ---
     from src.config.channels import CHANNELS
-    from src.load.database import atualizar_custos_no_banco
+    from src.load.database import atualizar_custos_no_banco, upsert_dim_produto
+    from src.transform.data_processor import consolidar_dim_produto
     from src.jobs.run_ads_update import atualizar_modulo_ads
     from src.jobs.run_costs_update import atualizar_modulo_operacional
     from src.jobs.run_shopee_ads_update import atualizar_modulo_shopee_ads
@@ -210,7 +235,7 @@ def executar_pipeline(nome_loja: str) -> None:
     print("[ DATA   ] Intervalo: AAAA-MM-DD,AAAA-MM-DD")
     escolha = input("\nSua escolha: ")
 
-    data_inicio, data_fim, dt_inicio_str, dt_fim_str, dias = (
+    data_inicio, data_fim, dt_inicio_str, dt_fim_str, dias, modo = (
         _resolver_periodo(escolha)
     )
 
@@ -222,13 +247,31 @@ def executar_pipeline(nome_loja: str) -> None:
         # EXTRACT + TRANSFORM + LOAD — every registered marketplace
         # ------------------------------------------------------------------
         total_pedidos = 0
+        anuncios_por_canal: list[pd.DataFrame] = []
         for spec in CHANNELS:
             try:
-                total_pedidos += _executar_canal(spec, data_inicio, data_fim)
+                qtd, df_anuncios = _executar_canal(
+                    spec, data_inicio, data_fim, modo
+                )
+                total_pedidos += qtd
+                if df_anuncios is not None and not df_anuncios.empty:
+                    anuncios_por_canal.append(df_anuncios)
             except Exception as exc:  # noqa: BLE001
                 # A failure in one channel must not abort the others.
                 logger.error("[%s] Falha durante extracao: %s",
                              spec.nome, exc, exc_info=True)
+
+        # ------------------------------------------------------------------
+        # Consolidate dim_produto across all channels BEFORE cost update.
+        # Without this step, a SKU listed in the cost spreadsheet but
+        # never previously inserted into dim_produto would be silently
+        # ignored by the cost UPDATE.
+        # ------------------------------------------------------------------
+        if anuncios_por_canal:
+            df_produto = consolidar_dim_produto(anuncios_por_canal)
+            if not df_produto.empty:
+                logger.info("Upsert dim_produto: %d SKU(s).", len(df_produto))
+                upsert_dim_produto(df_produto)
 
         # ------------------------------------------------------------------
         # Cost updates (always run, even when no orders came in)

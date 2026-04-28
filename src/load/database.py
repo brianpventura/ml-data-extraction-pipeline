@@ -391,6 +391,68 @@ def salvar_no_banco(
 
 
 # ---------------------------------------------------------------------------
+# dim_produto upsert (cross-channel consolidation)
+# ---------------------------------------------------------------------------
+
+def upsert_dim_produto(df_dim_produto: pd.DataFrame) -> int:
+    """Inserts or updates rows in ``dim_produto`` from a consolidated
+    cross-channel DataFrame.
+
+    The cost-update step uses ``UPDATE ... INNER JOIN`` on ``sku``,
+    which silently skips SKUs absent from ``dim_produto``. Calling this
+    function before the cost step guarantees every SKU seen in any
+    channel's listings has a row, so the cost update reaches it.
+
+    Args:
+        df_dim_produto: DataFrame with columns ``id_produto``, ``sku``,
+            ``descricao``, ``custo_unitario``.
+
+    Returns:
+        Number of rows processed.
+    """
+    if df_dim_produto.empty:
+        return 0
+
+    engine = conectar_mysql()
+    criar_tabelas(engine)
+
+    try:
+        with engine.begin() as conn:
+            df_dim_produto.to_sql(
+                "stg_dim_produto",
+                con=conn,
+                if_exists="replace",
+                index=False,
+                chunksize=500,
+                method="multi",
+            )
+            # ``custo_unitario`` is intentionally NOT updated here: it is
+            # owned by ``atualizar_custos_no_banco`` (spreadsheet truth).
+            conn.execute(
+                text("""
+                    INSERT INTO dim_produto
+                        (id_produto, sku, descricao, custo_unitario)
+                    SELECT id_produto, sku, descricao, custo_unitario
+                    FROM stg_dim_produto
+                    ON DUPLICATE KEY UPDATE
+                        sku = VALUES(sku),
+                        descricao = VALUES(descricao);
+                """)
+            )
+            conn.execute(text("DROP TABLE IF EXISTS stg_dim_produto;"))
+
+        logger.info(
+            "Upsert dim_produto concluido: %d registros.",
+            len(df_dim_produto),
+        )
+        return len(df_dim_produto)
+
+    except Exception as exc:
+        logger.error("Erro no upsert de dim_produto: %s", exc, exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Cost update in database
 # ---------------------------------------------------------------------------
 
@@ -450,24 +512,42 @@ def atualizar_custos_no_banco(df_custos: pd.DataFrame) -> int:
 # Query — incremental load
 # ---------------------------------------------------------------------------
 
-def obter_ultima_data_pedido() -> Optional[str]:
-    """Fetches the most recent order date from the database to
-    enable incremental loading.
+def obter_ultima_data_pedido(id_canal: Optional[int] = None) -> Optional[str]:
+    """Fetches the most recent order date for incremental loading.
+
+    Args:
+        id_canal: When provided, restricts the lookup to a single
+            channel (Mercado Livre = 1, Shopee = 2, ...). When omitted,
+            returns the global maximum across every channel.
+
+    Why per-channel matters:
+        With multiple marketplaces in the same database, the global
+        ``MAX(data_criacao)`` is dominated by whichever channel ran
+        most recently. Using it for *every* channel can cause the
+        slower channels to skip a window of orders. Pulling the
+        per-channel cursor avoids that.
 
     Returns:
-        Date formatted in the ISO 8601 pattern required by the API,
-        or None if the database is empty or the table does not exist.
+        Date formatted in the ISO 8601 pattern required by the
+        marketplace APIs, or ``None`` if no orders exist for the
+        given filter.
     """
     engine = conectar_mysql()
+    query = "SELECT MAX(data_criacao) FROM fato_pedido"
+    params: dict = {}
+    if id_canal is not None:
+        query += " WHERE id_canal = :id_canal"
+        params["id_canal"] = id_canal
+
     try:
         with engine.connect() as conn:
-            resultado = conn.execute(
-                text("SELECT MAX(data_criacao) FROM fato_pedido")
-            ).scalar()
+            resultado = conn.execute(text(query), params).scalar()
             if resultado:
                 return resultado.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
     except Exception as exc:
-        logger.warning("Aviso ao buscar última data no banco: %s", exc)
+        logger.warning(
+            "Aviso ao buscar ultima data (id_canal=%s): %s", id_canal, exc
+        )
 
     return None
 

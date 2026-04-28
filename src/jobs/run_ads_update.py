@@ -405,7 +405,10 @@ def atualizar_modulo_ads(
                 access_token, user_id = cliente_ml.obter_token_acesso()
                 renovado_em = datetime.datetime.now()
 
-            print(f"   [{idx}/{total_chunks}] Bloco: {chunk_inicio} → {chunk_fim}...", flush=True)
+            logger.info(
+                "[%d/%d] Bloco: %s -> %s...",
+                idx, total_chunks, chunk_inicio, chunk_fim,
+            )
             registros_bloco = 0
 
             # Strategy A: Per-campaign metrics
@@ -428,9 +431,12 @@ def atualizar_modulo_ads(
                             "metrics", metricas_brutas.get("results", [])
                         )
 
-                    # Debug: print raw format on first occurrence
+                    # Debug: log raw format on first occurrence
                     if lista_metricas and not debug_impresso:
-                        print(f"\n   [DEBUG] Formato bruto da 1ª métrica: {lista_metricas[0]}")
+                        logger.debug(
+                            "Formato bruto da 1a metrica: %s",
+                            lista_metricas[0],
+                        )
                         debug_impresso = True
 
                     for metrica in lista_metricas:
@@ -476,31 +482,40 @@ def atualizar_modulo_ads(
                     registros_bloco += 1
 
             if registros_bloco > 0:
-                print(f"{registros_bloco} registro(s) ✓")
+                logger.info("Bloco coletado: %d registro(s).", registros_bloco)
             else:
-                print("vazio (provavelmente além da retenção)")
+                logger.info(
+                    "Bloco vazio (possivelmente alem da retencao da API)."
+                )
 
             # --- Batch save: persist every _BATCH_SIZE chunks ---
             if idx % _BATCH_SIZE == 0 and dados_ads:
                 salvos = _salvar_lote_no_banco(dados_ads, engine)
                 total_salvos += salvos
                 dados_ads.clear()
-                print(f"   💾 Lote de {_BATCH_SIZE} dias salvo no banco ({salvos} registros, {total_salvos} total).")
+                logger.info(
+                    "Lote de %d dias salvo no banco (%d registros, %d total).",
+                    _BATCH_SIZE, salvos, total_salvos,
+                )
 
         # --- Flush: persist remaining data after loop ---
         if dados_ads:
             salvos = _salvar_lote_no_banco(dados_ads, engine)
             total_salvos += salvos
             dados_ads.clear()
-            print(f"   💾 Lote final salvo no banco ({salvos} registros).")
+            logger.info("Lote final salvo no banco (%d registros).", salvos)
 
         # --- 4. Results ---
         if total_salvos > 0:
-            print(f"\n✅ SUCESSO! {total_salvos} registros de Ads atualizados no banco de dados.\n")
+            logger.info(
+                "Modulo Ads concluido: %d registros atualizados.",
+                total_salvos,
+            )
         else:
-            print("   -> Nenhuma métrica retornada para este período.")
-            print("   -> Pode significar que não houve gastos com Ads nestes dias.")
-            print("   -> O pipeline continuará normalmente.\n")
+            logger.info(
+                "Nenhuma metrica retornada para este periodo "
+                "(provavelmente sem gastos com Ads). Pipeline segue normalmente."
+            )
 
     except Exception as e:
         # Attempt partial data save before reporting the error
@@ -508,14 +523,19 @@ def atualizar_modulo_ads(
             try:
                 eng = conectar_mysql()
                 salvos = _salvar_lote_no_banco(dados_ads, eng)
-                print(f"   💾 Salvamento de emergência: {salvos} registros salvos antes do erro.")
+                logger.warning(
+                    "Salvamento de emergencia: %d registros salvos antes do erro.",
+                    salvos,
+                )
                 dados_ads.clear()
             except Exception:
-                pass
+                logger.debug(
+                    "Falha ao executar salvamento de emergencia.",
+                    exc_info=True,
+                )
 
-        logger.error("Erro no módulo de Ads: %s", e, exc_info=True)
-        print(f"❌ Módulo Ads encontrou um erro: {e}")
-        print("   O pipeline continuará normalmente sem dados de Ads.\n")
+        logger.error("Erro no modulo de Ads: %s", e, exc_info=True)
+        logger.warning("Pipeline continuara sem dados de Ads.")
 
 
 # ---------------------------------------------------------------------------

@@ -128,10 +128,16 @@ def _obter_periodos_validos_api(access_token: str) -> list[str]:
                     if key:
                         periodos_unicos.add(key)
             else:
-                print(f"   -> Aviso: Não foi possível listar os períodos do grupo {grupo} (HTTP {resp.status_code}).")
-        except Exception as e:
-            print(f"   -> Falha de rede ao buscar períodos do grupo {grupo}: {e}")
-            
+                logger.warning(
+                    "Nao foi possivel listar periodos do grupo %s (HTTP %d).",
+                    grupo, resp.status_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Falha de rede ao buscar periodos do grupo %s: %s",
+                grupo, exc,
+            )
+
     return sorted(list(periodos_unicos))
 
 
@@ -142,7 +148,7 @@ def _buscar_summary_mensal(access_token: str, periodo: str) -> list[dict[str, An
     params = {"document_type": "BILL"}
     todas_charges = []
     
-    for tentativa in range(3):
+    for _tentativa in range(3):
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
             if resp.status_code == 200:
@@ -152,15 +158,21 @@ def _buscar_summary_mensal(access_token: str, periodo: str) -> list[dict[str, An
                 todas_charges.extend(charges)
                 break
             elif resp.status_code == 429:
-                print(f"      -> Limite da API (429) no Summary. Aguardando {RATE_LIMIT_BACKOFF_SECONDS}s...")
+                logger.warning(
+                    "Rate limit (429) no Summary. Aguardando %ds...",
+                    RATE_LIMIT_BACKOFF_SECONDS,
+                )
                 time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
             else:
-                print(f"      -> Aviso: Summary indisponível (HTTP {resp.status_code}). Tentando details... ({resp.text})")
+                logger.warning(
+                    "Summary indisponivel (HTTP %d). Tentando details... (%s)",
+                    resp.status_code, resp.text[:200],
+                )
                 break
         except requests.exceptions.RequestException as exc:
-            print(f"      -> Falha de rede: {exc}")
+            logger.warning("Falha de rede no Summary: %s", exc)
             break
-            
+
     return todas_charges
 
 
@@ -176,7 +188,7 @@ def _buscar_details_mensal(access_token: str, periodo: str) -> list[dict[str, An
             "document_type": "BILL"
         }
         
-        for tentativa in range(3):
+        for _tentativa in range(3):
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
                 if resp.status_code == 200:
@@ -188,13 +200,19 @@ def _buscar_details_mensal(access_token: str, periodo: str) -> list[dict[str, An
                         todas_charges.extend(charges)
                     break
                 elif resp.status_code == 429:
-                    print(f"      -> Limite da API (429) no Details {grupo}. Aguardando {RATE_LIMIT_BACKOFF_SECONDS}s...")
+                    logger.warning(
+                        "Rate limit (429) no Details %s. Aguardando %ds...",
+                        grupo, RATE_LIMIT_BACKOFF_SECONDS,
+                    )
                     time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
                 else:
-                    print(f"      -> Aviso: Details {grupo} indisponível (HTTP {resp.status_code}). ({resp.text})")
+                    logger.warning(
+                        "Details %s indisponivel (HTTP %d). (%s)",
+                        grupo, resp.status_code, resp.text[:200],
+                    )
                     break
             except requests.exceptions.RequestException as exc:
-                print(f"      -> Falha de rede: {exc}")
+                logger.warning("Falha de rede em Details %s: %s", grupo, exc)
                 break
         time.sleep(1)  # Polite delay between group requests
 
@@ -223,13 +241,11 @@ def atualizar_modulo_operacional(
         data_inicio_str: Explicit start date YYYY-MM-DD.
         data_fim_str: Explicit end date YYYY-MM-DD.
     """
-    print("\n=========================================")
-    print("   Módulo Extração - Custos Operacionais")
-    print("=========================================\n")
+    logger.info("=== Modulo Extracao - Custos Operacionais ===")
 
     try:
         # --- 1. Authentication ---
-        print("1. Validando Token...")
+        logger.info("Validando token...")
         cliente_ml = MercadoLivreClient()
         access_token, _ = cliente_ml.obter_token_acesso()
 
@@ -245,10 +261,13 @@ def atualizar_modulo_operacional(
         str_fim = data_fim.strftime("%Y-%m-%d")
 
         # --- 3. Query official periods ---
-        print(f"2. Extraindo custos operacionais de {str_inicio} até {str_fim}...")
-        print("   Consultando chaves de faturamento oficiais do Mercado Livre...")
+        logger.info(
+            "Extraindo custos operacionais de %s ate %s...",
+            str_inicio, str_fim,
+        )
+        logger.info("Consultando chaves de faturamento oficiais do Mercado Livre...")
         periodos_api = _obter_periodos_validos_api(access_token)
-        
+
         periodos = []
         if periodos_api:
             # Filter official periods that fall within the requested window
@@ -262,10 +281,13 @@ def atualizar_modulo_operacional(
                 except ValueError:
                     pass
         else:
-            print("   -> Utilizando gerador manual de datas (Fallback)...")
+            logger.info("Utilizando gerador manual de datas (fallback)...")
             periodos = _gerar_periodos_mensais(data_inicio, data_fim)
-            
-        print(f"   {len(periodos)} período(s) oficial(is) encontrado(s) para consulta.")
+
+        logger.info(
+            "%d periodo(s) oficial(is) encontrado(s) para consulta.",
+            len(periodos),
+        )
 
         dados_op: list[dict] = []
         debug_impresso = False
@@ -279,7 +301,7 @@ def atualizar_modulo_operacional(
                 access_token, _ = cliente_ml.obter_token_acesso()
                 renovado_em = datetime.datetime.now()
 
-            print(f"   [{idx}/{len(periodos)}] Período: {periodo}...", end=" ")
+            logger.info("[%d/%d] Periodo: %s...", idx, len(periodos), periodo)
 
             # Try summary first, then details as fallback
             charges = _buscar_summary_mensal(access_token, periodo)
@@ -290,12 +312,14 @@ def atualizar_modulo_operacional(
                 fonte = "details"
 
             if not charges:
-                print("vazio")
+                logger.info("Periodo %s vazio.", periodo)
                 continue
 
             # Debug: show first charge on first occurrence
             if not debug_impresso:
-                print(f"\n   [DEBUG] Fonte: {fonte} | 1º charge: {charges[0]}")
+                logger.debug(
+                    "Fonte: %s | 1o charge: %s", fonte, charges[0]
+                )
                 debug_impresso = True
 
             # Extract the first day of the period as data_metrica
@@ -325,14 +349,21 @@ def atualizar_modulo_operacional(
                 registros_periodo += 1
 
             if registros_periodo > 0:
-                print(f"{registros_periodo} custo(s) operacional(is) ✓")
+                logger.info(
+                    "Periodo %s: %d custo(s) operacional(is).",
+                    periodo, registros_periodo,
+                )
             elif debug_impresso:
-                print("nenhum custo operacional neste período")
+                logger.info(
+                    "Nenhum custo operacional classificado em %s.", periodo
+                )
 
         # --- 4. Aggregate and save ---
         if not dados_op:
-            print("   -> Nenhum custo operacional encontrado para este período.")
-            print("   -> O pipeline continuará normalmente.\n")
+            logger.info(
+                "Nenhum custo operacional encontrado para este periodo. "
+                "Pipeline segue normalmente."
+            )
             return
 
         df_fato_custos_operacionais = pd.DataFrame(dados_op)
@@ -344,25 +375,29 @@ def atualizar_modulo_operacional(
             .agg({"valor": "sum"})
         )
 
-        print(f"\n3. Salvando {len(df_fato_custos_operacionais)} registros agregados no MySQL...")
+        logger.info(
+            "Salvando %d registros agregados no MySQL...",
+            len(df_fato_custos_operacionais),
+        )
         salvos = salvar_custos_operacionais(df_fato_custos_operacionais)
 
         if salvos > 0:
-            print(f"✅ SUCESSO! {salvos} registros de custos operacionais salvos.\n")
-
-            # Resumo por tipo
+            logger.info(
+                "Modulo Operacional concluido: %d registros salvos.", salvos
+            )
+            # Resumo por tipo (info-level)
             resumo = df_fato_custos_operacionais.groupby("tipo_custo")["valor"].sum()
-            print("   📊 Resumo:")
             for tipo, total in resumo.items():
-                print(f"      {tipo}: R$ {total:,.2f}")
-            print()
+                logger.info("Resumo %s: R$ %s",
+                            tipo, format(total, ",.2f"))
         else:
-            print("   -> Nenhum dado para salvar.\n")
+            logger.info("Nenhum dado para salvar.")
 
-    except Exception as e:
-        logger.error("Erro no módulo de Custos Operacionais: %s", e, exc_info=True)
-        print(f"❌ Módulo Operacional encontrou um erro: {e}")
-        print("   O pipeline continuará normalmente.\n")
+    except Exception as exc:
+        logger.error(
+            "Erro no modulo de Custos Operacionais: %s", exc, exc_info=True
+        )
+        logger.warning("Pipeline continuara sem dados de custos operacionais.")
 
 
 # ---------------------------------------------------------------------------

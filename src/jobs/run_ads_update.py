@@ -294,13 +294,11 @@ def atualizar_modulo_ads(
         data_inicio_str: Explicit start date (YYYY-MM-DD). Overrides dias_retroativos.
         data_fim_str: Explicit end date (YYYY-MM-DD). Overrides dias_retroativos.
     """
-    print("\n=========================================")
-    print("   Módulo Extração - Mercado Ads API   ")
-    print("=========================================\n")
+    logger.info("=== Modulo Extracao - Mercado Ads API ===")
 
     try:
         # --- 1. Initial authentication ---
-        print("1. Validando Token...")
+        logger.info("Validando token...")
         cliente_ml = MercadoLivreClient()
         access_token, user_id = cliente_ml.obter_token_acesso()
 
@@ -316,36 +314,22 @@ def atualizar_modulo_ads(
             str_fim = hoje.strftime("%Y-%m-%d")
 
         # --- 2. Obter advertiser_id ---
-        print("2. Consultando advertiser_id para Product Ads (PADS)...")
+        logger.info("Consultando advertiser_id para Product Ads (PADS)...")
         advertiser_id = _obter_advertiser_id(access_token)
 
         if advertiser_id is None:
-            print()
-            print("=" * 60)
-            print("  ⚠️  MÓDULO DE ADS NÃO ATIVADO NESTA CONTA")
-            print("=" * 60)
-            print()
-            print("  A API retornou que não há um 'advertiser_id' vinculado")
-            print("  à sua conta. Isso pode ocorrer por:")
-            print()
-            print("  1. O módulo de Publicidade (Mercado Ads) nunca foi")
-            print("     ativado na sua conta. Ative em:")
-            print("     → mercadolivre.com.br > Minha conta > Publicidade")
-            print()
-            print("  2. Sua conta ainda não atende os requisitos mínimos:")
-            print("     → Reputação verde (ou superior)")
-            print("     → Mínimo de 10 vendas concluídas")
-            print("     → Sem faturas em aberto no Mercado Livre")
-            print()
-            print("  3. Termos e Condições do Mercado Ads pendentes.")
-            print("     Acesse o painel de Publicidade e aceite os termos.")
-            print()
-            print("  O pipeline continuará normalmente sem dados de Ads.\n")
+            logger.warning(
+                "Modulo de Ads nao ativado nesta conta. Causas possiveis: "
+                "(1) Publicidade nunca ativada (Minha conta > Publicidade); "
+                "(2) requisitos minimos nao atendidos (reputacao verde, 10+ "
+                "vendas, sem faturas em aberto); (3) termos do Mercado Ads "
+                "pendentes. O pipeline continuara sem dados de Ads."
+            )
             return
 
-        print(f"   Advertiser ID: {advertiser_id}")
+        logger.info("Advertiser ID: %s", advertiser_id)
 
-      # --- 3. Fetch metrics with date chunking + batch save ---
+        # --- 3. Fetch metrics with date chunking + batch save ---
         _CHUNK_DIAS = ADS_CHUNK_DAYS
         _BATCH_SIZE = ADS_BATCH_SIZE
 
@@ -361,9 +345,11 @@ def atualizar_modulo_ads(
             cursor = cursor + datetime.timedelta(days=1)
 
         total_chunks = len(chunks)
-        print(f"3. Extraindo métricas de Ads de {str_inicio} até {str_fim}...")
-        print(f"   Período dividido em {total_chunks} bloco(s) de {_CHUNK_DIAS} dia(s).")
-        print(f"   Salvamento no banco a cada {_BATCH_SIZE} blocos.\n")
+        logger.info(
+            "Extraindo metricas de Ads de %s ate %s "
+            "(%d bloco(s) de %d dia(s); salvamento a cada %d blocos).",
+            str_inicio, str_fim, total_chunks, _CHUNK_DIAS, _BATCH_SIZE,
+        )
 
         dados_ads: list[dict] = []
         debug_impresso = False
@@ -373,7 +359,7 @@ def atualizar_modulo_ads(
         engine = conectar_mysql()
         campanhas = _listar_campanhas(access_token, advertiser_id)
         if campanhas:
-            print(f"   {len(campanhas)} campanha(s) encontrada(s).")
+            logger.info("%d campanha(s) encontrada(s).", len(campanhas))
 
         def _salvar_lote_no_banco(dados: list, eng) -> int:
             """Saves a batch of metrics to MySQL via staging table."""
@@ -406,9 +392,18 @@ def atualizar_modulo_ads(
 
             return len(df)
 
+        # Tokens last ~6h on Mercado Livre — refreshing per chunk would add
+        # one HTTP roundtrip for every day in the period. The 401 handler
+        # inside the client already refreshes lazily when needed.
+        renovado_em = datetime.datetime.now()
+        _RENOVAR_APOS = datetime.timedelta(hours=4)
+
         for idx, (chunk_inicio, chunk_fim) in enumerate(chunks, start=1):
-            # Renew token per chunk to prevent expiration on long runs
-            access_token, user_id = cliente_ml.obter_token_acesso()
+            # Soft refresh only when we are running a long backfill that
+            # crosses the safe lifetime window.
+            if datetime.datetime.now() - renovado_em > _RENOVAR_APOS:
+                access_token, user_id = cliente_ml.obter_token_acesso()
+                renovado_em = datetime.datetime.now()
 
             print(f"   [{idx}/{total_chunks}] Bloco: {chunk_inicio} → {chunk_fim}...", flush=True)
             registros_bloco = 0

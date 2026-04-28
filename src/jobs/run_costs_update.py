@@ -270,9 +270,14 @@ def atualizar_modulo_operacional(
         dados_op: list[dict] = []
         debug_impresso = False
 
+        # Tokens last ~6h — only refresh when actually needed.
+        renovado_em = datetime.datetime.now()
+        _RENOVAR_APOS = datetime.timedelta(hours=4)
+
         for idx, periodo in enumerate(periodos, start=1):
-            # Renew token per iteration for long-running executions
-            access_token, _ = cliente_ml.obter_token_acesso()
+            if datetime.datetime.now() - renovado_em > _RENOVAR_APOS:
+                access_token, _ = cliente_ml.obter_token_acesso()
+                renovado_em = datetime.datetime.now()
 
             print(f"   [{idx}/{len(periodos)}] Período: {periodo}...", end=" ")
 

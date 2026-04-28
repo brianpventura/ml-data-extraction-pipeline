@@ -2,78 +2,106 @@
 transform.data_processor
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 Transform layer of the ETL pipeline.
-Receives raw API responses and local cost data, applies cleaning,
-type casting, dimensional modeling (Star Schema), and cost
-enrichment via SKU-based joins.
 
-Returns structures ready for database insertion.
-No API access or database operations belong here.
+Receives raw API responses and runs them through the matching
+``BaseMarketplaceAdapter`` to produce Star Schema DataFrames ready
+for the load layer.
+
+Design notes:
+    - One generic ``processar_pedidos`` function does the work for
+      every marketplace. The adapter chosen is what changes — picked
+      from ``src.config.channels.CHANNELS``.
+    - The legacy per-marketplace functions
+      (``processar_pedidos_mercado_livre_v2`` / ``..._shopee_v2``) are
+      kept as thin wrappers for backwards compatibility with code
+      paths still importing them.
 """
 
-import logging
 import datetime
-from typing import Any
+import logging
+from typing import Type
 
 import pandas as pd
 
+from src.config.channels import CHANNELS, ChannelSpec
 from src.config.utils import normalizar_sku
-from src.transform.adapters.mercado_livre_adapter import MercadoLivreAdapter
-from src.transform.adapters.shopee_adapter import ShopeeAdapter
+from src.transform.adapters.base_adapter import BaseMarketplaceAdapter
 
 logger = logging.getLogger(__name__)
 
 
+_EMPTY_RESULT: dict = {
+    "df_fato_pedido": pd.DataFrame(),
+    "df_fato_itens": pd.DataFrame(),
+    "df_fato_transacoes": pd.DataFrame(),
+    "df_dim_anuncios": pd.DataFrame(),
+    "df_dim_cliente": pd.DataFrame(),
+}
+
+
 # ---------------------------------------------------------------------------
-# Main transformation — Star Schema
+# Generic processor — one entry point for every marketplace
 # ---------------------------------------------------------------------------
 
-def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
-    """Parses Mercado Livre API orders into Star Schema DataFrames via Adapter.
+def processar_pedidos(
+    dados_brutos: list,
+    adapter_class: Type[BaseMarketplaceAdapter],
+    id_canal: int,
+    nome_canal: str = "",
+) -> dict:
+    """Runs ``dados_brutos`` through ``adapter_class`` and returns DataFrames.
 
     Args:
-        dados_brutos: List of dictionary records.
+        dados_brutos: Raw list of order dicts from the marketplace API.
+        adapter_class: Concrete adapter to apply (subclass of
+            ``BaseMarketplaceAdapter``).
+        id_canal: Canonical channel ID propagated into every row.
+        nome_canal: Optional channel label used in log messages.
 
     Returns:
-        Dict mapped to 4 DataFrames.
+        Dict with five DataFrames keyed by their target table:
+            - ``df_fato_pedido``
+            - ``df_fato_itens``
+            - ``df_fato_transacoes``
+            - ``df_dim_anuncios``
+            - ``df_dim_cliente``
     """
     if not dados_brutos:
-        return {
-            "df_fato_pedido": pd.DataFrame(),
-            "df_fato_itens": pd.DataFrame(),
-            "df_fato_transacoes": pd.DataFrame(),
-            "df_dim_anuncios": pd.DataFrame(),
-            "df_dim_cliente": pd.DataFrame()
-        }
+        return {**_EMPTY_RESULT}
 
-    adapter = MercadoLivreAdapter(raw_data=dados_brutos, id_canal=1)
+    adapter = adapter_class(raw_data=dados_brutos, id_canal=id_canal)
 
     df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
-    
+
     df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
     if not df_fato_itens.empty:
-        df_fato_itens = df_fato_itens.groupby(['id_pedido', 'id_anuncio'], as_index=False).agg({
-            'quantidade': 'sum',
-            'preco_unitario': 'max'
-        })
-        
+        df_fato_itens = df_fato_itens.groupby(
+            ["id_pedido", "id_anuncio"], as_index=False
+        ).agg({"quantidade": "sum", "preco_unitario": "max"})
+
     df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
-    
+
     df_dim_anuncios = pd.DataFrame(adapter.padronizar_anuncios())
     if not df_dim_anuncios.empty:
-        df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
+        df_dim_anuncios = df_dim_anuncios.drop_duplicates(
+            subset=["id_anuncio"], keep="last"
+        )
 
     df_dim_cliente = pd.DataFrame(adapter.padronizar_clientes())
     if not df_dim_cliente.empty:
-        df_dim_cliente = df_dim_cliente.drop_duplicates(subset=["id_cliente"], keep="last")
+        df_dim_cliente = df_dim_cliente.drop_duplicates(
+            subset=["id_cliente"], keep="last"
+        )
 
     logger.info(
-        "Processamento ML (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
-        "Transações Fin: %d | Anúncios: %d | Clientes: %d",
+        "Processamento %s concluido — Pedidos: %d | Itens: %d | "
+        "Transacoes Fin: %d | Anuncios: %d | Clientes: %d",
+        nome_canal or adapter_class.__name__,
         len(df_fato_pedido),
         len(df_fato_itens),
         len(df_fato_transacoes),
         len(df_dim_anuncios),
-        len(df_dim_cliente)
+        len(df_dim_cliente),
     )
 
     return {
@@ -81,8 +109,34 @@ def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
         "df_fato_itens": df_fato_itens,
         "df_fato_transacoes": df_fato_transacoes,
         "df_dim_anuncios": df_dim_anuncios,
-        "df_dim_cliente": df_dim_cliente
+        "df_dim_cliente": df_dim_cliente,
     }
+
+
+def processar_pelo_canal(spec: ChannelSpec, dados_brutos: list) -> dict:
+    """Convenience: processes raw data for a given ``ChannelSpec``."""
+    return processar_pedidos(
+        dados_brutos=dados_brutos,
+        adapter_class=spec.adapter_class,
+        id_canal=spec.id_canal,
+        nome_canal=spec.nome,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible wrappers (delegated to the generic function)
+# ---------------------------------------------------------------------------
+
+def processar_pedidos_mercado_livre_v2(dados_brutos: list) -> dict:
+    """Legacy wrapper. Prefer ``processar_pedidos`` + ``CHANNELS``."""
+    spec = next(c for c in CHANNELS if c.nome == "Mercado Livre")
+    return processar_pelo_canal(spec, dados_brutos)
+
+
+def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
+    """Legacy wrapper. Prefer ``processar_pedidos`` + ``CHANNELS``."""
+    spec = next(c for c in CHANNELS if c.nome == "Shopee")
+    return processar_pelo_canal(spec, dados_brutos)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +154,7 @@ def enriquecer_produtos_com_custos(
     cost, without losing products that have no match.
 
     Args:
-        df_dim_produto: Product DataFrame (output of ``processar_pedidos``).
+        df_dim_produto: Product DataFrame.
         df_custos: Cost DataFrame (output of ``carregar_planilha_custos``).
 
     Returns:
@@ -108,26 +162,19 @@ def enriquecer_produtos_com_custos(
         a SKU match was found.
     """
     if df_dim_produto.empty:
-        logger.warning("DataFrame de produtos está vazio. Merge ignorado.")
+        logger.warning("DataFrame de produtos esta vazio. Merge ignorado.")
         return df_dim_produto
 
     if df_custos.empty:
-        logger.warning("DataFrame de custos está vazio. Merge ignorado.")
+        logger.warning("DataFrame de custos esta vazio. Merge ignorado.")
         return df_dim_produto
 
-    # Work on a copy to avoid mutating the caller's DataFrame
     df_dim_produto = df_dim_produto.copy()
-
-    # Normalize SKU in products to ensure match
     df_dim_produto["sku_normalizado"] = normalizar_sku(df_dim_produto["sku"])
 
-    # Prepare cost DataFrame for the merge
     df_custos_merge = df_custos[["sku", "custo"]].copy()
-    df_custos_merge = df_custos_merge.rename(
-        columns={"custo": "custo_planilha"}
-    )
+    df_custos_merge = df_custos_merge.rename(columns={"custo": "custo_planilha"})
 
-    # Left join — preserves all products
     df_merged = df_dim_produto.merge(
         df_custos_merge,
         left_on="sku_normalizado",
@@ -136,104 +183,28 @@ def enriquecer_produtos_com_custos(
         suffixes=("", "_custo"),
     )
 
-    # Populate custo_unitario where a match was found
     mask = df_merged["custo_planilha"].notna()
-    df_merged.loc[mask, "custo_unitario"] = df_merged.loc[
-        mask, "custo_planilha"
-    ]
+    df_merged.loc[mask, "custo_unitario"] = df_merged.loc[mask, "custo_planilha"]
 
-    # Drop auxiliary columns
-    colunas_drop = ["sku_normalizado", "sku_custo", "custo_planilha"]
-    colunas_existentes = [c for c in colunas_drop if c in df_merged.columns]
-    df_merged = df_merged.drop(columns=colunas_existentes)
+    drop_cols = [c for c in ("sku_normalizado", "sku_custo", "custo_planilha")
+                 if c in df_merged.columns]
+    df_merged = df_merged.drop(columns=drop_cols)
 
     atualizados = int(mask.sum())
     logger.info(
         "Enriquecimento de custos: %d de %d produtos com custo atualizado.",
-        atualizados,
-        len(df_merged),
+        atualizados, len(df_merged),
     )
 
     return df_merged
 
 
 # ---------------------------------------------------------------------------
-# Shopee transformation — Star Schema
-# ---------------------------------------------------------------------------
-
-def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
-    """Parses Shopee API order payload into Star Schema DataFrames via Adapter.
-
-    Args:
-        dados_brutos: List of order dictionaries.
-
-    Returns:
-        Dict mapped to 4 DataFrames.
-    """
-    if not dados_brutos:
-        return {
-            "df_fato_pedido": pd.DataFrame(),
-            "df_fato_itens": pd.DataFrame(),
-            "df_fato_transacoes": pd.DataFrame(),
-            "df_dim_anuncios": pd.DataFrame(),
-            "df_dim_cliente": pd.DataFrame()
-        }
-
-    adapter = ShopeeAdapter(raw_data=dados_brutos, id_canal=2)
-
-    df_fato_pedido = pd.DataFrame(adapter.padronizar_pedidos())
-    
-    df_fato_itens = pd.DataFrame(adapter.padronizar_itens())
-    if not df_fato_itens.empty:
-        df_fato_itens = df_fato_itens.groupby(['id_pedido', 'id_anuncio'], as_index=False).agg({
-            'quantidade': 'sum',
-            'preco_unitario': 'max'
-        })
-        
-    df_fato_transacoes = pd.DataFrame(adapter.padronizar_transacoes())
-    
-    # Processa dim_anuncios e dropa duplicatas (garante id único)
-    df_dim_anuncios = pd.DataFrame(adapter.padronizar_anuncios())
-    if not df_dim_anuncios.empty:
-        df_dim_anuncios = df_dim_anuncios.drop_duplicates(subset=["id_anuncio"], keep="last")
-
-    df_dim_cliente = pd.DataFrame(adapter.padronizar_clientes())
-    if not df_dim_cliente.empty:
-        df_dim_cliente = df_dim_cliente.drop_duplicates(subset=["id_cliente"], keep="last")
-
-    logger.info(
-        "Processamento Shopee (V2/Adapter) concluído — Pedidos: %d | Itens: %d | "
-        "Transações Fin: %d | Anúncios: %d | Clientes: %d",
-        len(df_fato_pedido),
-        len(df_fato_itens),
-        len(df_fato_transacoes),
-        len(df_dim_anuncios),
-        len(df_dim_cliente)
-    )
-
-    return {
-        "df_fato_pedido": df_fato_pedido,
-        "df_fato_itens": df_fato_itens,
-        "df_fato_transacoes": df_fato_transacoes,
-        "df_dim_anuncios": df_dim_anuncios,
-        "df_dim_cliente": df_dim_cliente
-    }
-
-
-# ---------------------------------------------------------------------------
-# Private helper functions
+# Private helpers
 # ---------------------------------------------------------------------------
 
 def _unix_para_datetime(ts: int) -> str:
-    """Converts a Unix timestamp to a formatted datetime string.
-
-    Args:
-        ts: Unix timestamp (seconds since epoch).
-
-    Returns:
-        Date string in ``%Y-%m-%d %H:%M:%S`` format, or empty string
-        if the timestamp is zero/invalid.
-    """
+    """Converts a Unix timestamp to a formatted datetime string."""
     if not ts:
         return ""
     try:

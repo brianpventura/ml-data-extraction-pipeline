@@ -40,9 +40,11 @@ from src.config.settings import (
     MAX_NETWORK_RETRIES,
     RETRY_DELAY_SECONDS,
     THROTTLE_DELAY_SECONDS,
+    RATE_LIMIT_BACKOFF_SECONDS,
     carregar_tokens_shopee,
     salvar_tokens_shopee,
 )
+from src.extract.http_session import build_session
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,9 @@ class ShopeeClient:
         self._access_token: str = ""
         self._refresh_token: str = ""
         self._shop_id: int = 0
+
+        # Shared HTTP session — keep-alive + retry adapter (429/5xx)
+        self._session: requests.Session = build_session()
 
     # ------------------------------------------------------------------
     # Signature
@@ -265,7 +270,7 @@ class ShopeeClient:
         }
 
         url = f"{_API_HOST}{_REFRESH_TOKEN_PATH}"
-        response = requests.post(
+        response = self._session.post(
             url, params=params, json=payload, timeout=REQUEST_TIMEOUT
         )
 
@@ -354,7 +359,7 @@ class ShopeeClient:
         }
 
         url = f"{_API_HOST}{_TOKEN_PATH}"
-        response = requests.post(
+        response = self._session.post(
             url, params=params, json=payload, timeout=REQUEST_TIMEOUT
         )
 
@@ -472,7 +477,7 @@ class ShopeeClient:
                 url = f"{_API_HOST}{_ORDERS_PATH}"
 
                 try:
-                    resp = requests.get(
+                    resp = self._session.get(
                         url, params=params, timeout=REQUEST_TIMEOUT
                     )
                     dados = resp.json()
@@ -570,7 +575,7 @@ class ShopeeClient:
                 url = f"{_API_HOST}{_ORDER_DETAIL_PATH}"
 
                 try:
-                    resp = requests.get(
+                    resp = self._session.get(
                         url, params=params, timeout=REQUEST_TIMEOUT
                     )
                     dados = resp.json()
@@ -592,7 +597,7 @@ class ShopeeClient:
                         params = self._gerar_parametros_autenticados(_ORDER_DETAIL_PATH)
                         params["order_sn_list"] = ",".join(chunk_sns)
                         params["response_optional_fields"] = _DETAIL_OPTIONAL_FIELDS
-                        resp = requests.get(
+                        resp = self._session.get(
                             url, params=params, timeout=REQUEST_TIMEOUT
                         )
                         dados = resp.json()
@@ -667,7 +672,7 @@ class ShopeeClient:
         url = f"{_API_HOST}{_ADS_CAMPAIGNS_PATH}"
         
         try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
             
             # Trata erro de permissão (Forbidden)
             if resp.status_code == 403 or (resp.status_code == 200 and resp.json().get("error") == "error_permission"):
@@ -682,7 +687,7 @@ class ShopeeClient:
                 logger.warning("Shopee: Token expirado ao buscar campanhas de Ads. Ententando renovar...")
                 self.obter_token_acesso()
                 params = self._gerar_parametros_autenticados(_ADS_CAMPAIGNS_PATH)
-                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
                 dados = resp.json()
 
@@ -715,7 +720,7 @@ class ShopeeClient:
         url = f"{_API_HOST}{_ADS_PERFORMANCE_PATH}"
         
         try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 403:
                 return []
                 
@@ -728,7 +733,7 @@ class ShopeeClient:
                 params["campaign_id"] = campaign_id
                 params["start_time"] = int(dt_inicio.timestamp())
                 params["end_time"] = int(dt_fim.timestamp())
-                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
                 dados = resp.json()
 
@@ -743,7 +748,7 @@ class ShopeeClient:
     # ------------------------------------------------------------------
 
     def _enriquecer_escrow_paralelo(
-        self, todos_pedidos: list, max_workers: int = 5
+        self, todos_pedidos: list, max_workers: int = 8
     ) -> list:
         """Fetches escrow details in parallel using a thread pool.
 
@@ -812,7 +817,7 @@ class ShopeeClient:
                 params["order_sn"] = order_sn
 
                 url = f"{_API_HOST}{_ESCROW_PATH}"
-                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
                 dados = resp.json()
 
                 erro = dados.get("error", "")
@@ -822,7 +827,7 @@ class ShopeeClient:
                     self.obter_token_acesso()
                     params = self._gerar_parametros_autenticados(_ESCROW_PATH)
                     params["order_sn"] = order_sn
-                    resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                    resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
                     dados = resp.json()
                     erro = dados.get("error", "")
 

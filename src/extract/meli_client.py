@@ -1,13 +1,24 @@
 """
 extract.meli_client
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-HTTP client for the marketplace REST API.
+HTTP client for the Mercado Livre REST API.
 Handles authentication (OAuth 2.0), paginated order retrieval,
 and shipping cost enrichment. Returns raw JSON data only.
+
+Performance notes:
+    - Uses a shared ``requests.Session`` (keep-alive + connection pool)
+      to avoid TCP/TLS handshake overhead on every call.
+    - Shipping cost enrichment is parallelized via ``ThreadPoolExecutor``
+      so that N orders are enriched in roughly N/max_workers time
+      instead of N sequential round-trips.
+    - HTTP 429/5xx are retried automatically by the underlying adapter
+      with exponential backoff (urllib3 ``Retry``).
 """
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 import requests
@@ -23,11 +34,13 @@ from src.config.settings import (
     SHIPPING_TIMEOUT,
     RETRY_DELAY_SECONDS,
     THROTTLE_DELAY_SECONDS,
+    RATE_LIMIT_BACKOFF_SECONDS,
     MAX_TOKEN_RETRIES,
     MAX_NETWORK_RETRIES,
     carregar_tokens,
     salvar_tokens,
 )
+from src.extract.http_session import build_session
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +53,17 @@ _SHIPMENTS_URL = f"{API_BASE_URL}/shipments"
 
 _PAGE_LIMIT = 50
 _OFFSET_CEILING = 9950
+_SHIPPING_PARALLEL_WORKERS = 8
 
 
 class MercadoLivreClient:
-    """Encapsulates authentication and requests to the marketplace API."""
+    """Encapsulates authentication and requests to the Mercado Livre API."""
 
     def __init__(self) -> None:
         self._access_token: Optional[str] = None
         self._user_id: Optional[int] = None
         self._headers: dict[str, str] = {}
+        self._session: requests.Session = build_session()
 
     # ------------------------------------------------------------------
     # Authentication
@@ -90,7 +105,7 @@ class MercadoLivreClient:
                 "redirect_uri": REDIRECT_URI,
             }
 
-        response = requests.post(
+        response = self._session.post(
             _TOKEN_URL, headers=headers, data=payload, timeout=REQUEST_TIMEOUT
         )
 
@@ -107,8 +122,10 @@ class MercadoLivreClient:
             )
             logger.info("Access token obtained/renewed successfully.")
             return self._access_token, self._user_id
-        else:
-            raise RuntimeError(f"Erro ao obter token (HTTP {response.status_code}): {response.text}")
+
+        raise RuntimeError(
+            f"Erro ao obter token (HTTP {response.status_code}): {response.text}"
+        )
 
     # ------------------------------------------------------------------
     # Order extraction
@@ -119,8 +136,16 @@ class MercadoLivreClient:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Fetches order history with automatic pagination and enriches
-        each order with the actual shipping cost.
+        """Fetches the order history with pagination + shipping enrichment.
+
+        The extraction happens in two steps:
+
+        1. **Paginated list** — pulls orders 50 at a time. Uses dynamic
+           ``date_to`` pivot to bypass the 10k offset hard limit.
+        2. **Shipping enrichment (parallel)** — fetches actual shipping
+           cost from ``/shipments/{id}`` for every order using a thread
+           pool. This is *the* dominant cost of extraction; parallelism
+           here drives most of the wall-clock improvement.
 
         Args:
             date_from: Start date in the API's ISO 8601 format.
@@ -136,22 +161,55 @@ class MercadoLivreClient:
         """
         if not self._access_token or not self._user_id:
             raise RuntimeError(
-                "Token não inicializado. Chame obter_token_acesso() primeiro."
+                "Token nao inicializado. Chame obter_token_acesso() primeiro."
             )
 
+        # --- Step 1: paginated list (sequential — pagination is stateful) ---
+        todos_pedidos = self._listar_pedidos_paginado(date_from, date_to)
+
+        if not todos_pedidos:
+            logger.info("Mercado Livre: nenhum pedido novo encontrado.")
+            return []
+
+        # --- Step 2: parallel shipping enrichment ---
+        logger.info(
+            "Mercado Livre: enriquecendo %d pedidos com frete (paralelo, %d workers)...",
+            len(todos_pedidos), _SHIPPING_PARALLEL_WORKERS,
+        )
+        self._enriquecer_frete_paralelo(
+            todos_pedidos, max_workers=_SHIPPING_PARALLEL_WORKERS
+        )
+
+        logger.info(
+            "Mercado Livre: extracao completa (%d pedidos).", len(todos_pedidos)
+        )
+        return todos_pedidos
+
+    # ------------------------------------------------------------------
+    # Private — Pagination
+    # ------------------------------------------------------------------
+
+    def _listar_pedidos_paginado(
+        self,
+        date_from: Optional[str],
+        date_to: Optional[str],
+    ) -> list[dict[str, Any]]:
+        """Walks the paginated /orders/search endpoint and returns all hits.
+
+        Stateful (cursor-like via offset + dynamic date_to pivot), so
+        kept sequential. Network glitches are absorbed by the Session's
+        retry adapter; only token expiry needs explicit handling here.
+        """
         offset = 0
         current_date_to: Optional[str] = date_to
         todos_pedidos: list[dict[str, Any]] = []
         tentativas_token = 0
         tentativas_rede = 0
 
-        logger.info("Starting order extraction with shipping cost enrichment...")
-
-        # Initial probe to determine expected total for progress bar
         total_esperado = self._obter_total_pedidos(date_from)
         pbar = tqdm(
             total=total_esperado,
-            desc="Extracting Orders",
+            desc="ML Order List",
             unit="ped",
             colour="yellow",
         )
@@ -170,50 +228,44 @@ class MercadoLivreClient:
                     params["order.date_created.to"] = current_date_to
 
                 try:
-                    response = requests.get(
+                    response = self._session.get(
                         _ORDERS_URL,
                         headers=self._headers,
                         params=params,
                         timeout=REQUEST_TIMEOUT,
                     )
 
-                    # HTTP 401: automatic token renewal with retry cap
+                    # Token renewal — adapter cannot handle 401s
                     if response.status_code == 401:
                         tentativas_token += 1
                         if tentativas_token > MAX_TOKEN_RETRIES:
                             raise RuntimeError(
-                                f"Falha ao renovar token após {MAX_TOKEN_RETRIES} "
+                                f"Falha ao renovar token apos {MAX_TOKEN_RETRIES} "
                                 f"tentativas. Verifique suas credenciais."
                             )
                         tqdm.write(
-                            f"[!] Token expirado! Renovando acesso "
+                            f"[!] Token expirado. Renovando "
                             f"(tentativa {tentativas_token}/{MAX_TOKEN_RETRIES})..."
                         )
                         self.obter_token_acesso()
                         continue
 
-                    # Reset token retry counter on success
                     tentativas_token = 0
 
                     if response.status_code == 200:
-                        # Reset network retry counter on success
                         tentativas_rede = 0
                         resultados: list[dict] = response.json().get("results", [])
 
                         if not resultados:
                             break
 
-                        for pedido in resultados:
-                            custo_frete = self._buscar_custo_frete(pedido)
-                            pedido["custo_frete_real"] = custo_frete
-                            pbar.update(1)
-
                         todos_pedidos.extend(resultados)
+                        pbar.update(len(resultados))
 
                         if len(resultados) < _PAGE_LIMIT:
                             break
 
-                        # Dynamic date_to pivot to mitigate the API's hard offset limit of 10,000
+                        # Dynamic date_to pivot for the 10k offset hard limit
                         if offset + _PAGE_LIMIT >= _OFFSET_CEILING:
                             data_ultimo = resultados[-1].get("date_created")
                             tqdm.write(
@@ -224,13 +276,14 @@ class MercadoLivreClient:
                             offset = 0
                         else:
                             offset += _PAGE_LIMIT
+
                     elif response.status_code == 429:
+                        # Adapter retry already exhausted — wait extra and continue
                         retry_after = int(
                             response.headers.get("Retry-After", RATE_LIMIT_BACKOFF_SECONDS)
                         )
                         tqdm.write(
-                            f"[!] Rate limit atingido (HTTP 429). "
-                            f"Aguardando {retry_after}s antes de tentar novamente..."
+                            f"[!] Rate limit (HTTP 429). Aguardando {retry_after}s..."
                         )
                         time.sleep(retry_after)
                         continue
@@ -244,11 +297,11 @@ class MercadoLivreClient:
                     tentativas_rede += 1
                     if tentativas_rede > MAX_NETWORK_RETRIES:
                         raise RuntimeError(
-                            f"Rede instável após {MAX_NETWORK_RETRIES} "
-                            f"tentativas consecutivas. Última falha: {exc}"
+                            f"Rede instavel apos {MAX_NETWORK_RETRIES} "
+                            f"tentativas. Ultima falha: {exc}"
                         ) from exc
                     tqdm.write(
-                        f"-> Instabilidade na rede ({tentativas_rede}/"
+                        f"-> Instabilidade de rede ({tentativas_rede}/"
                         f"{MAX_NETWORK_RETRIES}). "
                         f"Aguardando {RETRY_DELAY_SECONDS}s... ({exc})"
                     )
@@ -259,11 +312,49 @@ class MercadoLivreClient:
         finally:
             pbar.close()
 
-        logger.info("Extraction complete: %d orders retrieved.", len(todos_pedidos))
         return todos_pedidos
 
     # ------------------------------------------------------------------
-    # Private methods
+    # Private — Parallel shipping enrichment
+    # ------------------------------------------------------------------
+
+    def _enriquecer_frete_paralelo(
+        self, pedidos: list[dict[str, Any]], max_workers: int = 8
+    ) -> None:
+        """Fetches shipping cost for each order in parallel (in-place).
+
+        Uses a Semaphore to cap concurrent requests so the API rate
+        limit is respected.
+
+        Args:
+            pedidos: List of raw order dicts. Each dict gets a
+                ``custo_frete_real`` field populated in place.
+            max_workers: Max simultaneous shipping API requests.
+        """
+        semaphore = threading.Semaphore(max_workers)
+
+        def _worker(pedido: dict[str, Any]) -> None:
+            with semaphore:
+                pedido["custo_frete_real"] = self._buscar_custo_frete(pedido)
+
+        pbar = tqdm(
+            total=len(pedidos),
+            desc="ML Shipping Cost",
+            unit="ped",
+            colour="cyan",
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_worker, p) for p in pedidos]
+                for future in as_completed(futures):
+                    # Surface any worker exception immediately
+                    future.result()
+                    pbar.update(1)
+        finally:
+            pbar.close()
+
+    # ------------------------------------------------------------------
+    # Private — Single-call helpers
     # ------------------------------------------------------------------
 
     def _obter_total_pedidos(self, date_from: Optional[str]) -> int:
@@ -273,7 +364,7 @@ class MercadoLivreClient:
             if date_from:
                 params["order.date_created.from"] = date_from
 
-            resp = requests.get(
+            resp = self._session.get(
                 _ORDERS_URL,
                 headers=self._headers,
                 params=params,
@@ -298,7 +389,7 @@ class MercadoLivreClient:
 
         try:
             url = f"{_SHIPMENTS_URL}/{shipping_id}"
-            resp = requests.get(
+            resp = self._session.get(
                 url, headers=self._headers, timeout=SHIPPING_TIMEOUT
             )
 

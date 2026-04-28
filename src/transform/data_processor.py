@@ -140,6 +140,74 @@ def processar_pedidos_shopee_v2(dados_brutos: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# dim_produto consolidation (cross-channel)
+# ---------------------------------------------------------------------------
+
+def consolidar_dim_produto(
+    anuncios_por_canal: list[pd.DataFrame],
+) -> pd.DataFrame:
+    """Builds ``dim_produto`` from the union of channel ``df_dim_anuncios``.
+
+    A *product* is keyed by its canonical SKU. The same SKU may appear
+    in multiple channels (Mercado Livre + Shopee + Amazon...) — each
+    showing a different ``id_anuncio`` and ``titulo_anuncio``. We
+    collapse all of them by SKU, picking the first non-empty title we
+    see as the description.
+
+    Without this step, ``dim_produto`` would never gain rows for SKUs
+    that didn't already exist in the cost spreadsheet — silently
+    dropping their cost updates.
+
+    Args:
+        anuncios_por_canal: List of ``df_dim_anuncios`` DataFrames, one
+            per channel processed in the current run. Empty/None entries
+            are tolerated.
+
+    Returns:
+        DataFrame with columns ``id_produto``, ``sku``, ``descricao``,
+        ``custo_unitario`` (defaulted to 0.0; the cost-update step
+        will fill it).
+    """
+    valid = [df for df in anuncios_por_canal if df is not None and not df.empty]
+    if not valid:
+        return pd.DataFrame(
+            columns=["id_produto", "sku", "descricao", "custo_unitario"]
+        )
+
+    df = pd.concat(valid, ignore_index=True)
+
+    # Normalize SKU for stable joins downstream
+    df["sku"] = normalizar_sku(df["sku"])
+
+    # Drop entries with no SKU — those can't be products
+    df = df[df["sku"].astype(str).str.strip() != ""]
+    df = df[df["sku"].astype(str).str.lower() != "nan"]
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=["id_produto", "sku", "descricao", "custo_unitario"]
+        )
+
+    # First non-empty title wins
+    df["titulo_anuncio"] = df["titulo_anuncio"].fillna("")
+    df = df.sort_values("titulo_anuncio", ascending=False)
+    df = df.drop_duplicates(subset=["sku"], keep="first")
+
+    df_produto = pd.DataFrame({
+        "id_produto": df["sku"].astype(str),  # SKU as canonical product id
+        "sku": df["sku"].astype(str),
+        "descricao": df["titulo_anuncio"].astype(str).str.slice(0, 255),
+        "custo_unitario": 0.0,
+    })
+
+    logger.info(
+        "dim_produto consolidado: %d SKU(s) unico(s) entre os canais.",
+        len(df_produto),
+    )
+    return df_produto
+
+
+# ---------------------------------------------------------------------------
 # Cost enrichment via spreadsheet
 # ---------------------------------------------------------------------------
 
